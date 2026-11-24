@@ -1,0 +1,608 @@
+{
+  "info": {
+    "_postman_id": "c1a2b3d4-e5f6-7890-abcd-cloudvault001",
+    "name": "CloudVault API",
+    "description": "Comprehensive Postman Collection for CloudVault — Cloud-Based Student Document Management and Backup System. Covers Authentication, Direct-to-S3 Upload Lifecycle, Document CRUD, Dashboard Telemetry, Categories, and Audit Activities.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:5000/api",
+      "type": "string"
+    },
+    {
+      "key": "token",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "documentId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "s3ObjectKey",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. System & Telemetry",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            },
+            "description": "Verifies that the CloudVault backend is running and displays environment mode."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test(\"System is operational\", function () {",
+                  "    var json = pm.response.json();",
+                  "    pm.expect(json.success).to.be.true;",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Dashboard Statistics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/dashboard/stats",
+              "host": ["{{baseUrl}}"],
+              "path": ["dashboard", "stats"]
+            },
+            "description": "Retrieves total documents, storage used vs 10GB quota, category distribution, recent uploads, and S3 health."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Storage Telemetry",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/storage/telemetry",
+              "host": ["{{baseUrl}}"],
+              "path": ["storage", "telemetry"]
+            },
+            "description": "Fetches live AWS S3 bucket health, region, encryption headers, and versioning state."
+          }
+        },
+        {
+          "name": "Storage Sync & Hash Logs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/storage/logs?page=1&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["storage", "logs"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "limit", "value": "10" }
+              ]
+            },
+            "description": "Paginated audit logs of verified S3 object keys and SHA-256 hashes."
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Authentication",
+      "item": [
+        {
+          "name": "Student Registration",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fullName\": \"Alex Rivera\",\n  \"email\": \"alex.rivera@campus.edu\",\n  \"password\": \"CampusPassword123!\",\n  \"studentId\": \"STU-84920\",\n  \"department\": \"Computer Science & Engineering\",\n  \"semester\": \"Semester 6\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/register",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "register"]
+            },
+            "description": "Registers a new student account, hashes the password via bcrypt (work factor 12), and returns a 7-day JWT."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201 || pm.response.code === 200) {",
+                  "    var json = pm.response.json();",
+                  "    if (json.data && json.data.token) {",
+                  "        pm.collectionVariables.set(\"token\", json.data.token);",
+                  "        pm.environment.set(\"token\", json.data.token);",
+                  "        console.log(\"Saved JWT to collection and environment token variable\");",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Student Login",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"alex.rivera@campus.edu\",\n  \"password\": \"CampusPassword123!\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "login"]
+            },
+            "description": "Authenticates student credentials, sets the secure HttpOnly cookie, and returns the JWT."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Login successful (Status 200)\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "var json = pm.response.json();",
+                  "if (json.data && json.data.token) {",
+                  "    pm.collectionVariables.set(\"token\", json.data.token);",
+                  "    pm.environment.set(\"token\", json.data.token);",
+                  "    console.log(\"Token updated successfully.\");",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Authenticated Profile (Me)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "me"]
+            },
+            "description": "Returns current student details and live storage quota telemetry."
+          }
+        },
+        {
+          "name": "Update Profile",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fullName\": \"Alex Rivera\",\n  \"department\": \"Computer Science & Engineering\",\n  \"semester\": \"Semester 6\",\n  \"studentId\": \"STU-84920\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/profile",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "profile"]
+            }
+          }
+        },
+        {
+          "name": "Change Password",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"currentPassword\": \"CampusPassword123!\",\n  \"newPassword\": \"NewCampusPassword456!\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/password",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "password"]
+            }
+          }
+        },
+        {
+          "name": "Forgot Password Request",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"alex.rivera@campus.edu\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/forgot-password",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "forgot-password"]
+            }
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/logout",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "logout"]
+            },
+            "description": "Clears the secure HttpOnly cookie and invalidates session."
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Document Storage & Lifecycle",
+      "item": [
+        {
+          "name": "Step 1: Request Presigned Upload URL",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"filename\": \"CS301_Distributed_Systems_Lecture08.pdf\",\n  \"category\": \"Lecture Notes\",\n  \"mimeType\": \"application/pdf\",\n  \"fileSize\": 4404019\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/documents/upload-url",
+              "host": ["{{baseUrl}}"],
+              "path": ["documents", "upload-url"]
+            },
+            "description": "Atomically checks user quota (10GB), reserves bytes, and issues a 15-minute Amazon S3 PUT presigned URL."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Presigned Upload URL received\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    var json = pm.response.json();",
+                  "    pm.expect(json.data.uploadUrl).to.be.a('string');",
+                  "    pm.collectionVariables.set(\"uploadUrl\", json.data.uploadUrl);",
+                  "    pm.environment.set(\"uploadUrl\", json.data.uploadUrl);",
+                  "    pm.collectionVariables.set(\"documentId\", json.data.documentId);",
+                  "    pm.environment.set(\"documentId\", json.data.documentId);",
+                  "    pm.collectionVariables.set(\"s3ObjectKey\", json.data.s3ObjectKey);",
+                  "    pm.environment.set(\"s3ObjectKey\", json.data.s3ObjectKey);",
+                  "    console.log(\"Saved uploadUrl and documentId:\", json.data.documentId);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Step 1.5 (Direct S3): Upload Binary File to S3",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/pdf" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "%PDF-1.4 Simulated CloudVault Academic PDF Document Binary for S3 Storage Testing %EOF"
+            },
+            "url": {
+              "raw": "{{uploadUrl}}",
+              "host": ["{{uploadUrl}}"]
+            },
+            "description": "Uploads the physical document binary directly to Amazon S3 via the presigned PUT URL. Amazon S3 will return 200 OK."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"S3 Direct Upload Succeeded (Status 200)\", function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Step 2: Finalize Upload (Verify S3 & Commit)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"documentId\": \"{{documentId}}\",\n  \"displayName\": \"Distributed Systems — Byzantine Fault Tolerance Notes\",\n  \"category\": \"Lecture Notes\",\n  \"sha256Checksum\": \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\n  \"tags\": [\"CS301\", \"Distributed\", \"Midterm\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/documents/finalize",
+              "host": ["{{baseUrl}}"],
+              "path": ["documents", "finalize"]
+            },
+            "description": "Calls S3 HeadObjectCommand to verify physical existence and size, then transitions status to COMPLETED and commits quota."
+          }
+        },
+        {
+          "name": "Step 2 (Alt): Abort Upload (Release Reserved Quota)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"documentId\": \"{{documentId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/documents/abort-upload",
+              "host": ["{{baseUrl}}"],
+              "path": ["documents", "abort-upload"]
+            },
+            "description": "Refunds reserved quota if user cancels or upload fails."
+          }
+        },
+        {
+          "name": "List Documents (Search & Filter)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/documents?q=&category=All&extension=all&sortBy=-createdAt&page=1&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["documents"],
+              "query": [
+                { "key": "q", "value": "", "description": "Search keyword" },
+                { "key": "category", "value": "All", "description": "Category filter" },
+                { "key": "extension", "value": "all", "description": "File format filter" },
+                { "key": "sortBy", "value": "-createdAt", "description": "Sort order" },
+                { "key": "page", "value": "1" },
+                { "key": "limit", "value": "10" }
+              ]
+            },
+            "description": "Fetches paginated documents for authenticated student."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var json = pm.response.json();",
+                  "if (json.data && json.data.length > 0) {",
+                  "    pm.collectionVariables.set(\"documentId\", json.data[0]._id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Document by ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/documents/{{documentId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["documents", "{{documentId}}"]
+            }
+          }
+        },
+        {
+          "name": "Get Presigned Download URL",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/documents/{{documentId}}/download-url",
+              "host": ["{{baseUrl}}"],
+              "path": ["documents", "{{documentId}}", "download-url"]
+            },
+            "description": "Returns time-limited (5-min) S3 GET URL with Content-Disposition: attachment."
+          }
+        },
+        {
+          "name": "Get Presigned Preview URL",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/documents/{{documentId}}/preview-url",
+              "host": ["{{baseUrl}}"],
+              "path": ["documents", "{{documentId}}", "preview-url"]
+            },
+            "description": "Returns time-limited (15-min) S3 GET URL with Content-Disposition: inline for browser viewer."
+          }
+        },
+        {
+          "name": "Update Document (Rename / Recategorize)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"displayName\": \"CS301 BFT Lecture 8 (Final Review Notes)\",\n  \"category\": \"Study Materials\",\n  \"tags\": [\"CS301\", \"FinalExam\", \"Revision\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/documents/{{documentId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["documents", "{{documentId}}"]
+            },
+            "description": "Updates metadata without re-uploading file to S3."
+          }
+        },
+        {
+          "name": "Soft Delete Document (Move to Trash)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/documents/{{documentId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["documents", "{{documentId}}"]
+            },
+            "description": "Soft-deletes to trash, decrements active storage quota, and retains file in S3 for 30-day recovery."
+          }
+        },
+        {
+          "name": "Permanent Purge Document",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/documents/{{documentId}}/purge",
+              "host": ["{{baseUrl}}"],
+              "path": ["documents", "{{documentId}}", "purge"]
+            },
+            "description": "Permanently destroys physical file from Amazon S3 and deletes MongoDB record."
+          }
+        },
+        {
+          "name": "Batch Delete Documents",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"documentIds\": [\"{{documentId}}\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/documents/batch-delete",
+              "host": ["{{baseUrl}}"],
+              "path": ["documents", "batch-delete"]
+            }
+          }
+        },
+        {
+          "name": "Batch Move Category",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"documentIds\": [\"{{documentId}}\"],\n  \"targetCategory\": \"Lecture Notes\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/documents/batch-move",
+              "host": ["{{baseUrl}}"],
+              "path": ["documents", "batch-move"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Academic Categories",
+      "item": [
+        {
+          "name": "Get Categories with Live Storage Stats",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/categories",
+              "host": ["{{baseUrl}}"],
+              "path": ["categories"]
+            },
+            "description": "Aggregates real document counts and MB used per coursework category."
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Audit Activities",
+      "item": [
+        {
+          "name": "Get Activity Log Stream",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/activities?page=1&limit=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["activities"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "limit", "value": "20" },
+                { "key": "action", "value": "ALL", "disabled": true }
+              ]
+            },
+            "description": "Fetches chronological student audit stream."
+          }
+        }
+      ]
+    }
+  ]
+}
