@@ -12,19 +12,19 @@ export function Login() {
   const { success, error: toastError } = useToast();
   const navigate = useNavigate();
 
-  const [email, setEmail] = useState('alex.rivera@campus.edu');
-  const [password, setPassword] = useState('VaultKeySecurePass');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(true);
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
 
-  const handleSubmit = async (e) => {
+ const handleSubmit = async (e) => {
     e.preventDefault();
     setErrorMessage('');
     setLoading(true);
 
     try {
-      await login(email, password);
+      await login(email, password, rememberMe);
       success('Vault authorized successfully');
       setTimeout(() => {
         navigate('/dashboard');
@@ -51,15 +51,7 @@ export function Login() {
         </div>
 
         {/* Real-time Status Badge */}
-        <div className="flex items-center gap-2.5 px-3.5 py-2.5 rounded-DEFAULT bg-surface-container-low mb-6 border border-border-subtle/60">
-          <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent-emerald opacity-75" />
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-accent-emerald" />
-          </span>
-          <p className="font-mono-metric text-[11px] text-on-surface-variant">
-            Campus SSO active • Amazon S3 KMS encryption enabled
-          </p>
-        </div>
+        
 
         {/* Error Alert if any */}
         {errorMessage && (
@@ -70,7 +62,7 @@ export function Login() {
         )}
 
         {/* Sign In Form */}
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+        <form onSubmit={handleSubmit} className="flex flex-col gap-6">
           <Input
             label="INSTITUTIONAL EMAIL"
             sublabel=".EDU VERIFIED"
@@ -106,7 +98,6 @@ export function Login() {
               Forgot password?
             </Link>
           </div>
-
           <Button
             type="submit"
             variant="primary"
@@ -114,22 +105,22 @@ export function Login() {
             loading={loading}
             icon="arrow_forward"
             iconPosition="right"
-            className="w-full mt-2 font-semibold shadow-md"
+            className="w-full mt-1 font-semibold shadow-md"
           >
             Sign In to CloudVault
           </Button>
         </form>
 
         {/* Divider */}
-        <div className="relative flex items-center justify-center my-6">
+        {/* <div className="relative flex items-center justify-center my-6">
           <div className="w-full h-px bg-surface-container-highest" />
           <span className="absolute px-3 bg-card-surface font-micro-caption text-secondary uppercase tracking-widest text-[9px]">
             or academic bridge
           </span>
-        </div>
+        </div> */}
 
         {/* SSO Button */}
-        <button
+        {/* <button
           type="button"
           onClick={() => {
             setEmail('alex.rivera@campus.edu');
@@ -142,7 +133,7 @@ export function Login() {
             account_balance
           </span>
           <span>Continue with Campus SSO / Portal</span>
-        </button>
+        </button> */}
 
         {/* Registration Footer */}
         <div className="mt-6 pt-5 bg-surface-container-low/60 -mx-8 -mb-8 p-4 rounded-b-2xl flex items-center justify-center text-center border-t border-border-subtle/50">

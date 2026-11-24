@@ -11,6 +11,7 @@ import { Skeleton } from '../components/common/Skeleton';
 
 export function Dashboard() {
   const { user } = useAuth();
+  console.log(user)
   const { success, info } = useToast();
 
   const [documents, setDocuments] = useState([]);
@@ -75,7 +76,7 @@ export function Dashboard() {
         <div>
           <div className="flex items-center gap-2 mb-1">
             <h1 className="font-headline-sm text-2xl font-bold text-on-surface">
-              Welcome back, {user?.name?.split(' ')[0] || 'Alex'}
+              Welcome back, {user?.fullName.split(" ")[0]}
             </h1>
             <Badge variant="emerald" size="sm" pulse>
               ACTIVE VAULT

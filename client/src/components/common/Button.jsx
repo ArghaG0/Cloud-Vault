@@ -11,7 +11,7 @@ export function Button({
   className = '',
   ...props
 }) {
-  const baseClasses = 'inline-flex items-center justify-center font-medium transition-all active:scale-[0.98] focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none';
+  const baseClasses = 'h-12 inline-flex items-center justify-center font-medium transition-all active:scale-[0.98] focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none';
 
   const variants = {
     primary: 'bg-primary text-on-primary hover:bg-neutral-800 dark:hover:bg-neutral-200 shadow-sm',
@@ -35,15 +35,15 @@ export function Button({
       {...props}
     >
       {loading ? (
-        <span className="material-symbols-outlined animate-spin text-[18px]">progress_activity</span>
+        <span className="material-symbols-outlined animate-spin text-[10px]">progress_activity</span>
       ) : (
         icon && iconPosition === 'left' && (
-          <span className="material-symbols-outlined text-[18px]">{icon}</span>
+          <span className="material-symbols-outlined text-[10px]">{icon}</span>
         )
       )}
       <span>{children}</span>
       {!loading && icon && iconPosition === 'right' && (
-        <span className="material-symbols-outlined text-[18px]">{icon}</span>
+        <span className="material-symbols-outlined text-[10px]">{icon}</span>
       )}
     </button>
   );

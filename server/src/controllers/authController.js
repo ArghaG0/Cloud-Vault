@@ -4,11 +4,15 @@ const User = require('../models/User');
 const Activity = require('../models/Activity');
 const { setAuthCookie, clearAuthCookie } = require('../middleware/auth');
 
-function generateToken(userId) {
+function generateToken(userId, rememberMe = false) {
+  const expiresIn = rememberMe
+    ? '30d'
+    : process.env.JWT_EXPIRES_IN || '7d';
+
   return jwt.sign(
     { id: userId },
     process.env.JWT_SECRET || 'fallback_secret_for_local_dev',
-    { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+    { expiresIn }
   );
 }
 
@@ -47,8 +51,8 @@ exports.register = async (req, res) => {
       email: email.toLowerCase(),
       passwordHash: password, // Will be hashed by pre-save hook
       studentId: studentId || '',
-      department: department || 'Computer Science & Engineering',
-      semester: semester || 'Semester 6',
+      department: department ,
+      semester: semester ,
       role: 'Student', // Prevent self-elevation to Administrator
     });
 
@@ -77,7 +81,7 @@ exports.register = async (req, res) => {
 // POST /api/auth/login
 exports.login = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password ,rememberMe } = req.body;
 
     if (!email || !password) {
       return res.status(400).json({
@@ -105,7 +109,7 @@ exports.login = async (req, res) => {
     user.lastLogin = new Date();
     await user.save();
 
-    const token = generateToken(user._id);
+const token = generateToken(user._id, Boolean(rememberMe));
     setAuthCookie(res, token);
 
     await Activity.create({

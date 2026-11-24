@@ -1,4 +1,5 @@
 import { createContext, useContext, useState } from 'react';
+import { loginUser, logoutUser, registerUser, updateUserProfile } from '../api/auth';
 
 const AuthContext = createContext();
 
@@ -9,63 +10,65 @@ export function AuthProvider({ children }) {
       try {
         return JSON.parse(saved);
       } catch {
-        // Fall back to default student
+        return null;
       }
     }
-    return {
-      name: 'Alex Rivera',
-      email: 'alex.rivera@campus.edu',
-      studentId: 'STU-84920',
-      degree: 'B.Sc. Computer Science',
-      department: 'Computer Science & Engineering',
-      semester: 'Semester 6',
-      role: 'Student',
-      storageUsedBytes: 2472000000, // 2.47 GB
-      storageTotalBytes: 10737418240, // 10 GB
-      ssoVerified: true,
-      lastLogin: new Date().toISOString(),
-    };
+    return null;
   });
 
-  const [isAuthenticated, setIsAuthenticated] = useState(true);
+  const [isAuthenticated, setIsAuthenticated] = useState(() =>
+    Boolean(localStorage.getItem('cloudvault_user'))
+  );
 
-  const login = async (email, password) => {
+  const login = async (email, password, rememberMe = false) => {
     if (!email || !password) {
       throw new Error('Please provide both institutional email and passcode.');
     }
-    const updatedUser = {
-      ...user,
-      email,
-      lastLogin: new Date().toISOString(),
-    };
-    setUser(updatedUser);
-    setIsAuthenticated(true);
-    localStorage.setItem('cloudvault_user', JSON.stringify(updatedUser));
-    return updatedUser;
+
+    const res = await loginUser({ email, password, rememberMe });
+    const loggedInUser = res?.data?.user || null;
+
+    setUser(loggedInUser);
+    setIsAuthenticated(Boolean(loggedInUser));
+    if (loggedInUser) {
+      localStorage.setItem('cloudvault_user', JSON.stringify(loggedInUser));
+    }
+    return loggedInUser;
   };
 
-  const logout = () => {
-    setIsAuthenticated(false);
+  const logout = async () => {
+    try {
+      await logoutUser();
+    } finally {
+      setUser(null);
+      setIsAuthenticated(false);
+      localStorage.removeItem('cloudvault_user');
+    }
   };
+
+ 
 
   const register = async (userData) => {
-    const newUser = {
-      ...user,
-      ...userData,
-      lastLogin: new Date().toISOString(),
-    };
-    setUser(newUser);
-    setIsAuthenticated(true);
-    localStorage.setItem('cloudvault_user', JSON.stringify(newUser));
-    return newUser;
+    const res = await registerUser(userData);
+    const createdUser = res?.data?.user || null;
+
+    setUser(createdUser);
+    setIsAuthenticated(Boolean(createdUser));
+    if (createdUser) {
+      localStorage.setItem('cloudvault_user', JSON.stringify(createdUser));
+    }
+    return createdUser;
   };
 
-  const updateUser = (updates) => {
-    setUser(prev => {
-      const next = { ...prev, ...updates };
-      localStorage.setItem('cloudvault_user', JSON.stringify(next));
-      return next;
-    });
+ const updateUser = async (updates) => {
+    const res = await updateUserProfile(updates);
+    const updatedUser = res?.data || null;
+
+    if (updatedUser) {
+      setUser(updatedUser);
+      localStorage.setItem('cloudvault_user', JSON.stringify(updatedUser));
+    }
+    return updatedUser;
   };
 
   return (
