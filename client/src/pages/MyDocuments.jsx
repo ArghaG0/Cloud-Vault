@@ -378,7 +378,7 @@ export function MyDocuments() {
                   <th className="py-3.5 pr-4 text-right">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-border-subtle/60 font-body-sm text-xs">
+<tbody className="divide-y divide-white/10 font-body-sm text-xs">
                 {filteredDocuments.map((doc) => {
                   const isSelected = selectedIds.has(doc.id);
                   const { icon, color } = getFileIcon(doc.extension);
@@ -515,7 +515,7 @@ export function MyDocuments() {
             return (
               <div
                 key={doc.id}
-                className={`p-4 rounded-2xl bg-card-surface border border-border-subtle shadow-card flex flex-col justify-between transition-all ${isSelected ? 'ring-2 ring-primary' : 'hover:border-primary/40'
+                className={`p-4 rounded-2xl bg-card-surface border border-gray-100/40 shadow-card flex flex-col justify-between transition-all ${isSelected ? 'ring-2 ring-primary' : 'hover:border-primary/40'
                   }`}
               >
                 <div>
@@ -535,7 +535,7 @@ export function MyDocuments() {
                     {docSub}
                   </p>
                 </div>
-                <div className="pt-3 border-t border-border-subtle/60 flex items-center justify-between text-[11px]">
+                <div className="pt-3 border-t border-white/40 flex items-center justify-between text-[11px]">
                   <Badge size="sm">{doc.category}</Badge>
                   <span className="font-mono text-secondary">{formatBytes(docSize)}</span>
                 </div>
@@ -547,7 +547,7 @@ export function MyDocuments() {
 
    {/* Floating Batch Action Toolbar */}
 {selectedIds.size > 0 && (
-  <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2.5 rounded-full bg-neutral-900/60 px-6 py-4 text-neutral-100 backdrop-blur-xl border border-white/15 shadow-[0_12px_32px_-4px_rgba(0,0,0,0.65),inset_0_1px_0_rgba(255,255,255,0.08)] animate-zoom-in-95">
+  <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2.5 rounded-full bg-neutral-800/60 px-6 py-4 text-neutral-100 backdrop-blur-xl border border-white/15 shadow-[0_12px_32px_-4px_rgba(0,0,0,0.65),inset_0_1px_0_rgba(255,255,255,0.08)] animate-zoom-in-95">
     <div className="flex items-center gap-1.5 pl-1.5 pr-2.5 border-r border-white/15">
       <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-white/12 px-1.5 font-mono text-[11px] font-semibold text-white">
         {selectedIds.size}

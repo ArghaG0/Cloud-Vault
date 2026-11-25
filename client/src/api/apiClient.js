@@ -1,3 +1,7 @@
+// In Docker, VITE_API_URL is intentionally empty so we use a relative /api path.
+// nginx on the same origin proxies /api/* → server:5001.
+// In local dev, falls back to http://localhost:5001/api (direct connection,
+// or proxied via Vite's server.proxy config).
 const DEFAULT_API_URL = 'http://localhost:5001/api';
 
 const RAW_API_URL =
@@ -6,8 +10,8 @@ const RAW_API_URL =
     (process.env.EXPO_PUBLIC_API_URL || process.env.NEXT_PUBLIC_API_URL)) ||
   DEFAULT_API_URL;
 
-// Ensure standard /api prefix format
-const CLEAN_BASE = RAW_API_URL.replace(/\/+$/, '');
+// When RAW_API_URL is empty string (Docker same-origin mode), use relative /api
+const CLEAN_BASE = RAW_API_URL.trim() === '' ? '/api' : RAW_API_URL.replace(/\/+$/, '');
 export const API_BASE_URL = CLEAN_BASE.endsWith('/api')
   ? CLEAN_BASE
   : `${CLEAN_BASE}/api`;
