@@ -36,7 +36,7 @@ export function MyDocuments() {
     async function fetchDocs() {
       try {
         const data = await documentService.getDocuments();
-        setDocuments(data);
+        setDocuments(Array.isArray(data) ? data : []);
       } catch {
         toastError('Failed to load documents');
       } finally {
@@ -48,7 +48,7 @@ export function MyDocuments() {
 
   // Filter & Sort
   const filteredDocuments = useMemo(() => {
-    let result = documents.filter((doc) => {
+    const result = documents.filter((doc) => {
       const matchesCategory = selectedCategory === 'All' || doc.category === selectedCategory;
       const matchesType =
         selectedType === 'all' ||
@@ -57,12 +57,13 @@ export function MyDocuments() {
         (selectedType === 'pptx' && (doc.extension === 'pptx' || doc.extension === 'ppt')) ||
         (selectedType === 'zip' && doc.extension === 'zip') ||
         (selectedType === 'image' && ['png', 'jpg', 'jpeg'].includes(doc.extension));
-
       const q = searchQuery.toLowerCase().trim();
+      const name = (doc.displayName || doc.name || '').toLowerCase();
+      const title = (doc.originalFilename || doc.title || '').toLowerCase();
       const matchesSearch =
         !q ||
-        doc.name.toLowerCase().includes(q) ||
-        doc.title.toLowerCase().includes(q) ||
+        name.includes(q) ||
+        title.includes(q) ||
         (doc.tags && doc.tags.some((t) => t.toLowerCase().includes(q)));
 
       return matchesCategory && matchesType && matchesSearch;
@@ -70,13 +71,20 @@ export function MyDocuments() {
 
     // Sorting
     result.sort((a, b) => {
-      if (sortBy === 'date') return new Date(b.lastModified) - new Date(a.lastModified);
-      if (sortBy === 'name') return a.name.localeCompare(b.name);
-      if (sortBy === 'size') return b.sizeBytes - a.sizeBytes;
-      if (sortBy === 'status') return a.s3Status.localeCompare(b.s3Status);
+      if (sortBy === 'date') {
+        return new Date(b.lastModified || b.createdAt || 0) - new Date(a.lastModified || a.createdAt || 0);
+      }
+      if (sortBy === 'name') {
+        return (a.displayName || a.name || '').localeCompare(b.displayName || b.name || '');
+      }
+      if (sortBy === 'size') {
+        return (b.fileSize ?? b.sizeBytes ?? 0) - (a.fileSize ?? a.sizeBytes ?? 0);
+      }
+      if (sortBy === 'status') {
+        return (a.s3Status || '').localeCompare(b.s3Status || '');
+      }
       return 0;
     });
-
     return result;
   }, [documents, selectedCategory, selectedType, searchQuery, sortBy]);
 
@@ -101,15 +109,36 @@ export function MyDocuments() {
   // Actions
   const handleRename = async () => {
     if (!renameDoc || !newName.trim()) return;
+    const trimmed = newName.trim();
     try {
-      await documentService.updateDocument(renameDoc.id, { name: newName.trim() });
+      await documentService.updateDocument(renameDoc.id, { displayName: trimmed, name: trimmed });
       setDocuments((prev) =>
-        prev.map((d) => (d.id === renameDoc.id ? { ...d, name: newName.trim() } : d))
+        prev.map((d) =>
+          d.id === renameDoc.id ? { ...d, displayName: trimmed, name: trimmed } : d
+        )
       );
       success('Document renamed successfully');
       setRenameDoc(null);
     } catch {
       toastError('Failed to rename document');
+    }
+  };
+
+  const handleDownload = async (doc) => {
+    try {
+      info(`Preparing download for ${doc.displayName || doc.name}...`);
+      const { downloadUrl } = await documentService.requestPresignedDownloadUrl(doc.id);
+      if (downloadUrl) {
+        const link = document.createElement('a');
+        link.href = downloadUrl;
+        link.download = doc.originalFilename || doc.displayName || doc.name || 'download';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      }
+      success('Download started');
+    } catch {
+      toastError('Failed to start download');
     }
   };
 
@@ -215,7 +244,7 @@ export function MyDocuments() {
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 p-3 rounded-2xl bg-card-surface border border-border-subtle shadow-card">
         {/* Search Field */}
         <div className="relative flex-1">
-          <span className="material-symbols-outlined absolute left-3.5 text-[18px] text-secondary pointer-events-none">
+          <span className="material-symbols-outlined absolute left-3.5 top-1/2 -translate-y-1/2 text-[18px] text-secondary pointer-events-none">
             search
           </span>
           <input
@@ -357,6 +386,9 @@ export function MyDocuments() {
                 {filteredDocuments.map((doc) => {
                   const isSelected = selectedIds.has(doc.id);
                   const { icon, color } = getFileIcon(doc.extension);
+                  const docName = doc.displayName || doc.name;
+                  const docSub = doc.originalFilename || doc.title;
+                  const docSize = doc.fileSize ?? doc.sizeBytes ?? 0;
 
                   return (
                     <tr
@@ -378,10 +410,10 @@ export function MyDocuments() {
                           </div>
                           <div className="flex flex-col min-w-0">
                             <span className="font-semibold text-on-surface truncate max-w-sm">
-                              {doc.name}
+                              {docName}
                             </span>
                             <span className="text-[11px] text-secondary truncate max-w-sm">
-                              {doc.title}
+                              {docSub}
                             </span>
                           </div>
                         </div>
@@ -390,10 +422,10 @@ export function MyDocuments() {
                         <Badge size="sm">{doc.category}</Badge>
                       </td>
                       <td className="py-3 px-3 font-mono text-[11px] text-on-surface-variant">
-                        {formatBytes(doc.sizeBytes)}
+                        {formatBytes(docSize)}
                       </td>
                       <td className="py-3 px-3 text-secondary text-[11px]">
-                        {formatRelativeTime(doc.lastModified)}
+                        {formatRelativeTime(doc.lastModified || doc.createdAt)}
                       </td>
                       <td className="py-3 px-3">
                         <Badge
@@ -439,24 +471,21 @@ export function MyDocuments() {
                               {
                                 icon: 'download',
                                 label: 'Download File',
-                                onClick: () => {
-                                  info(`Downloading ${doc.name}...`);
-                                  setTimeout(() => success('Download started'), 500);
-                                },
+                                onClick: () => handleDownload(doc),
                               },
                               {
                                 icon: 'edit',
                                 label: 'Rename File',
                                 onClick: () => {
                                   setRenameDoc(doc);
-                                  setNewName(doc.name);
+                                  setNewName(docName);
                                 },
                               },
                               {
                                 icon: 'share',
                                 label: 'Copy S3 Link',
                                 onClick: () => {
-                                  navigator.clipboard.writeText(doc.s3Key);
+                                  navigator.clipboard.writeText(doc.s3ObjectKey || doc.s3Key || '');
                                   success('S3 Object reference copied to clipboard');
                                 },
                               },
@@ -484,6 +513,9 @@ export function MyDocuments() {
           {filteredDocuments.map((doc) => {
             const isSelected = selectedIds.has(doc.id);
             const { icon, color } = getFileIcon(doc.extension);
+            const docName = doc.displayName || doc.name;
+            const docSub = doc.originalFilename || doc.title;
+            const docSize = doc.fileSize ?? doc.sizeBytes ?? 0;
 
             return (
               <div
@@ -502,16 +534,16 @@ export function MyDocuments() {
                       onChange={() => toggleSelect(doc.id)}
                     />
                   </div>
-                  <h4 className="font-semibold text-xs text-on-surface truncate mb-1" title={doc.name}>
-                    {doc.name}
+                  <h4 className="font-semibold text-xs text-on-surface truncate mb-1" title={docName}>
+                    {docName}
                   </h4>
                   <p className="text-[11px] text-secondary line-clamp-2 mb-3">
-                    {doc.title}
+                    {docSub}
                   </p>
                 </div>
                 <div className="pt-3 border-t border-border-subtle/60 flex items-center justify-between text-[11px]">
                   <Badge size="sm">{doc.category}</Badge>
-                  <span className="font-mono text-secondary">{formatBytes(doc.sizeBytes)}</span>
+                  <span className="font-mono text-secondary">{formatBytes(docSize)}</span>
                 </div>
               </div>
             );
@@ -558,7 +590,7 @@ export function MyDocuments() {
         </div>
       )}
 
-      {/* Quick Preview Modal (from Stitch) */}
+      {/* Quick Preview Modal */}
       <Modal
         isOpen={!!previewDoc}
         onClose={() => setPreviewDoc(null)}
@@ -576,15 +608,21 @@ export function MyDocuments() {
                   </span>
                 </div>
                 <div>
-                  <h4 className="font-semibold text-sm text-on-surface">{previewDoc.name}</h4>
-                  <p className="font-mono text-[11px] text-secondary">{previewDoc.s3Key}</p>
+                  <h4 className="font-semibold text-sm text-on-surface">
+                    {previewDoc.displayName || previewDoc.name}
+                  </h4>
+                  <p className="font-mono text-[11px] text-secondary">
+                    {previewDoc.s3ObjectKey || previewDoc.s3Key}
+                  </p>
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-2 text-xs font-mono pt-3 border-t border-border-subtle/60">
                 <div>
                   <span className="text-secondary block">File Size:</span>
-                  <span className="text-on-surface font-bold">{formatBytes(previewDoc.sizeBytes)}</span>
+                  <span className="text-on-surface font-bold">
+                    {formatBytes(previewDoc.fileSize ?? previewDoc.sizeBytes ?? 0)}
+                  </span>
                 </div>
                 <div>
                   <span className="text-secondary block">Category:</span>
@@ -596,14 +634,16 @@ export function MyDocuments() {
                 </div>
                 <div>
                   <span className="text-secondary block">Revisions:</span>
-                  <span className="text-on-surface font-bold">{previewDoc.versionCount} versions</span>
+                  <span className="text-on-surface font-bold">{previewDoc.versionCount ?? 1} versions</span>
                 </div>
               </div>
             </div>
 
-            <div className="p-3 rounded-DEFAULT bg-surface-container font-mono text-[10px] text-secondary break-all">
-              SHA-256: {previewDoc.sha256Checksum}
-            </div>
+            {previewDoc.sha256Checksum && (
+              <div className="p-3 rounded-DEFAULT bg-surface-container font-mono text-[10px] text-secondary break-all">
+                SHA-256: {previewDoc.sha256Checksum}
+              </div>
+            )}
 
             <div className="flex items-center justify-end gap-2.5 pt-2">
               <Button variant="secondary" size="sm" onClick={() => setPreviewDoc(null)}>
@@ -656,15 +696,16 @@ export function MyDocuments() {
       >
         <div className="flex flex-col gap-4">
           <p className="font-body-sm text-xs text-on-surface-variant">
-            Are you sure you want to delete <strong className="text-on-surface">{deleteDoc?.name}</strong>?
-            This will permanently remove the file from your academic repository and delete the Amazon S3 object.
+            Are you sure you want to delete{' '}
+            <strong className="text-on-surface">{deleteDoc?.displayName || deleteDoc?.name}</strong>?
+            This will remove the file from your vault.
           </p>
           <div className="flex items-center justify-end gap-2">
             <Button variant="secondary" size="sm" onClick={() => setDeleteDoc(null)}>
               Cancel
             </Button>
             <Button variant="destructive" size="sm" onClick={handleDeleteConfirm}>
-              Delete from Vault
+              Delete File
             </Button>
           </div>
         </div>
@@ -674,20 +715,21 @@ export function MyDocuments() {
       <Modal
         isOpen={batchDeleteOpen}
         onClose={() => setBatchDeleteOpen(false)}
-        title="Batch File Deletion"
-        subtitle="Multiple Objects Removal"
-        icon="delete"
+        title="Confirm Batch Deletion"
+        subtitle={`${selectedIds.size} selected item(s)`}
+        icon="warning"
       >
         <div className="flex flex-col gap-4">
           <p className="font-body-sm text-xs text-on-surface-variant">
-            Are you sure you want to delete all <strong className="text-on-surface">{selectedIds.size} selected documents</strong> from your vault?
+            Are you sure you want to delete{' '}
+            <strong className="text-on-surface">{selectedIds.size}</strong> selected document(s)?
           </p>
           <div className="flex items-center justify-end gap-2">
             <Button variant="secondary" size="sm" onClick={() => setBatchDeleteOpen(false)}>
               Cancel
             </Button>
             <Button variant="destructive" size="sm" onClick={handleBatchDelete}>
-              Confirm Batch Deletion
+              Delete Selected
             </Button>
           </div>
         </div>
