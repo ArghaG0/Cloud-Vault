@@ -221,17 +221,15 @@ export function MyDocuments() {
                 setSelectedCategory(cat.label);
                 setSearchParams(cat.label === 'All' ? {} : { category: cat.label });
               }}
-              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-all border ${
-                isActive
+              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-all border ${isActive
                   ? 'bg-primary text-on-primary border-primary shadow-xs'
                   : 'bg-surface-container-low hover:bg-surface-container text-on-surface border-border-subtle/70'
-              }`}
+                }`}
             >
               <span>{cat.label}</span>
               <span
-                className={`font-mono text-[10px] px-1.5 py-0.2 rounded-full ${
-                  isActive ? 'bg-white/20 text-white' : 'bg-surface-container text-secondary'
-                }`}
+                className={`font-mono text-[10px] px-1.5 py-0.2 rounded-full ${isActive ? 'bg-white/20 text-white' : 'bg-surface-container text-secondary'
+                  }`}
               >
                 {cat.count}
               </span>
@@ -307,9 +305,8 @@ export function MyDocuments() {
             <button
               type="button"
               onClick={() => setViewMode('list')}
-              className={`p-1.5 rounded-full transition-colors ${
-                viewMode === 'list' ? 'bg-primary text-on-primary' : 'text-secondary hover:text-on-surface'
-              }`}
+              className={`p-1.5 rounded-full transition-colors ${viewMode === 'list' ? 'bg-primary text-on-primary' : 'text-secondary hover:text-on-surface'
+                }`}
               title="List View"
             >
               <span className="material-symbols-outlined text-[16px]">format_list_bulleted</span>
@@ -317,9 +314,8 @@ export function MyDocuments() {
             <button
               type="button"
               onClick={() => setViewMode('grid')}
-              className={`p-1.5 rounded-full transition-colors ${
-                viewMode === 'grid' ? 'bg-primary text-on-primary' : 'text-secondary hover:text-on-surface'
-              }`}
+              className={`p-1.5 rounded-full transition-colors ${viewMode === 'grid' ? 'bg-primary text-on-primary' : 'text-secondary hover:text-on-surface'
+                }`}
               title="Grid View"
             >
               <span className="material-symbols-outlined text-[16px]">grid_view</span>
@@ -393,9 +389,8 @@ export function MyDocuments() {
                   return (
                     <tr
                       key={doc.id}
-                      className={`hover:bg-surface-container-low/60 transition-colors ${
-                        isSelected ? 'bg-surface-container-low' : ''
-                      }`}
+                      className={`hover:bg-surface-container-low/60 transition-colors ${isSelected ? 'bg-surface-container-low' : ''
+                        }`}
                     >
                       <td className="py-3 pl-4">
                         <Checkbox
@@ -520,9 +515,8 @@ export function MyDocuments() {
             return (
               <div
                 key={doc.id}
-                className={`p-4 rounded-2xl bg-card-surface border border-border-subtle shadow-card flex flex-col justify-between transition-all ${
-                  isSelected ? 'ring-2 ring-primary' : 'hover:border-primary/40'
-                }`}
+                className={`p-4 rounded-2xl bg-card-surface border border-border-subtle shadow-card flex flex-col justify-between transition-all ${isSelected ? 'ring-2 ring-primary' : 'hover:border-primary/40'
+                  }`}
               >
                 <div>
                   <div className="flex items-start justify-between mb-3">
@@ -551,44 +545,49 @@ export function MyDocuments() {
         </div>
       )}
 
-      {/* Floating Batch Action Toolbar */}
-      {selectedIds.size > 0 && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 bg-primary text-on-primary rounded-full px-5 py-2.5 shadow-modal flex items-center gap-4 animate-zoom-in-95">
-          <div className="flex items-center gap-2 pr-3 border-r border-white/20">
-            <span className="font-mono text-xs font-bold">{selectedIds.size}</span>
-            <span className="text-xs">selected</span>
-          </div>
+   {/* Floating Batch Action Toolbar */}
+{selectedIds.size > 0 && (
+  <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2.5 rounded-full bg-neutral-900/60 px-6 py-4 text-neutral-100 backdrop-blur-xl border border-white/15 shadow-[0_12px_32px_-4px_rgba(0,0,0,0.65),inset_0_1px_0_rgba(255,255,255,0.08)] animate-zoom-in-95">
+    <div className="flex items-center gap-1.5 pl-1.5 pr-2.5 border-r border-white/15">
+      <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-white/12 px-1.5 font-mono text-[11px] font-semibold text-white">
+        {selectedIds.size}
+      </span>
+      <span className="text-[11px] font-medium text-neutral-300 whitespace-nowrap">
+        selected
+      </span>
+    </div>
 
-          <div className="flex items-center gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleBatchDownload}
-              className="text-on-primary hover:bg-white/10"
-              icon="download"
-            >
-              Download
-            </Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => setBatchDeleteOpen(true)}
-              className="bg-red-500/20 text-red-300 hover:bg-red-500/30 border-red-500/30"
-              icon="delete"
-            >
-              Delete
-            </Button>
-            <button
-              type="button"
-              onClick={() => setSelectedIds(new Set())}
-              className="p-1 rounded-full hover:bg-white/10 text-white/70 hover:text-white"
-              title="Clear selection"
-            >
-              <span className="material-symbols-outlined text-[16px]">close</span>
-            </button>
-          </div>
-        </div>
-      )}
+    <div className="flex items-center gap-1.5">
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={handleBatchDownload}
+        className="h-7 px-2.5 rounded-full bg-white/10 text-neutral-100 text-xs font-medium border border-white/10 transition-all duration-150 hover:bg-white/18 hover:text-white active:scale-[0.98]"
+        icon="download"
+      >
+        Download
+      </Button>
+      <Button
+        variant="destructive"
+        size="sm"
+        onClick={() => setBatchDeleteOpen(true)}
+        className="h-7 px-2.5 rounded-full bg-red-500/20 text-red-300 text-xs font-medium border border-red-400/25 transition-all duration-150 hover:bg-red-500/35 hover:text-red-200 active:scale-[0.98]"
+        icon="delete"
+      >
+        Delete
+      </Button>
+      <button
+        type="button"
+        onClick={() => setSelectedIds(new Set())}
+        className="ml-0.5 flex h-7 w-7 items-center justify-center rounded-full text-neutral-400 transition-colors hover:bg-white/10 hover:text-white"
+        title="Clear selection"
+        aria-label="Clear selection"
+      >
+        <span className="material-symbols-outlined text-[15px]">close</span>
+      </button>
+    </div>
+  </div>
+)}
 
       {/* Quick Preview Modal */}
       <Modal

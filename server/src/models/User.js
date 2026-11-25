@@ -40,7 +40,7 @@ const userSchema = new mongoose.Schema(
     },
     storageQuotaBytes: {
       type: Number,
-      default: 10737418240, // 10 GB
+      default: 5368709120, // 5 GB (AWS S3 Free Tier safety limit)
     },
     storageUsedBytes: {
       type: Number,

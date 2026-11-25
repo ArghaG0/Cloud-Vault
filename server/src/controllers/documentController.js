@@ -3,6 +3,10 @@ const User = require('../models/User');
 const Activity = require('../models/Activity');
 const s3Service = require('../services/s3Service');
 
+// AWS S3 Free Tier Cap: 5 GB total storage, max 50 MB per single file
+const AWS_S3_FREE_TIER_MAX_FILE_BYTES = 50 * 1024 * 1024; // 50 MB
+const AWS_S3_FREE_TIER_MAX_TOTAL_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB
+
 // POST /api/documents/upload-url (Step 1 of direct S3 upload: Quota reservation + Presigned URL)
 exports.requestUploadUrl = async (req, res) => {
   try {
@@ -21,15 +25,31 @@ exports.requestUploadUrl = async (req, res) => {
       return res.status(400).json({ success: false, error: 'Invalid file size specified.' });
     }
 
+    // Free Tier single file safety check (50 MB limit)
+    if (numBytes > AWS_S3_FREE_TIER_MAX_FILE_BYTES) {
+      return res.status(400).json({
+        success: false,
+        error: `File size exceeds the 50 MB limit to preserve AWS S3 Free Tier tiering.`,
+        code: 'FILE_TOO_LARGE',
+      });
+    }
+
     // Atomic Quota Check & Reservation:
     // Ensure (storageUsedBytes + reservedBytes + fileSize) <= storageQuotaBytes
+    // and also does not exceed AWS Free Tier 5GB absolute ceiling
+    const user = await User.findById(userId);
+    const effectiveQuota = Math.min(
+      user?.storageQuotaBytes || AWS_S3_FREE_TIER_MAX_TOTAL_BYTES,
+      AWS_S3_FREE_TIER_MAX_TOTAL_BYTES
+    );
+
     const updatedUser = await User.findOneAndUpdate(
       {
         _id: userId,
         $expr: {
           $lte: [
             { $add: ['$storageUsedBytes', '$reservedBytes', numBytes] },
-            '$storageQuotaBytes',
+            effectiveQuota,
           ],
         },
       },
@@ -40,7 +60,7 @@ exports.requestUploadUrl = async (req, res) => {
     if (!updatedUser) {
       return res.status(403).json({
         success: false,
-        error: 'Storage quota exceeded. Please free up space before uploading.',
+        error: 'Storage quota exceeded. Free Tier limit is 5 GB. Please delete files before uploading.',
         code: 'QUOTA_EXCEEDED',
       });
     }

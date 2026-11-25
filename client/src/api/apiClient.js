@@ -54,9 +54,22 @@ export function buildQuery(params) {
 export async function apiClient(path, init = {}) {
   const token = await getAuthToken();
   const headers = new Headers(init.headers);
+  let body = init.body;
 
-  if (init.body && !headers.has('Content-Type') && !(init.body instanceof FormData)) {
-    headers.set('Content-Type', 'application/json');
+  if (body !== undefined && body !== null) {
+    if (
+      !(body instanceof FormData) &&
+      !(body instanceof Blob) &&
+      !(body instanceof ArrayBuffer) &&
+      typeof body !== 'string'
+    ) {
+      body = JSON.stringify(body);
+      if (!headers.has('Content-Type')) {
+        headers.set('Content-Type', 'application/json');
+      }
+    } else if (!headers.has('Content-Type') && !(body instanceof FormData)) {
+      headers.set('Content-Type', 'application/json');
+    }
   }
 
   if (token && !headers.has('Authorization')) {
@@ -76,6 +89,7 @@ export async function apiClient(path, init = {}) {
     credentials: 'include',
     ...init,
     headers,
+    body,
   });
 
   let parsed = null;

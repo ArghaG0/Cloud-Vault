@@ -27,7 +27,7 @@ exports.getStats = async (req, res) => {
 
     const user = req.user;
     const storageUsedBytes = user.storageUsedBytes || 0;
-    const storageQuotaBytes = user.storageQuotaBytes || 10737418240;
+    const storageQuotaBytes = user.storageQuotaBytes || 5368709120; // 5 GB AWS S3 Free Tier limit
 
     const categoryDistribution = categoryAgg.map(item => ({
       category: item._id,

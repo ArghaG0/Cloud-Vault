@@ -20,6 +20,7 @@ const CATEGORY_COLORS = [
 
 export function Dashboard() {
   const { user } = useAuth();
+  console.log(user)
   const { success, info } = useToast();
 
   const [documents, setDocuments] = useState([]);

@@ -42,9 +42,24 @@ export function DocumentPreview() {
     }
   };
 
-  const handleDownload = () => {
-    info(`Downloading ${document?.name}...`);
-    setTimeout(() => success('Download started'), 600);
+  const handleDownload = async () => {
+    try {
+      info(`Preparing download for ${document?.name}...`);
+      const res = await documentService.requestPresignedDownloadUrl(id);
+      if (res?.downloadUrl) {
+        const link = window.document.createElement('a');
+        link.href = res.downloadUrl;
+        link.download = document?.originalFilename || document?.name || 'document';
+        window.document.body.appendChild(link);
+        link.click();
+        link.remove();
+        success('Download initiated');
+      } else {
+        toastError('Download link not returned by S3 service');
+      }
+    } catch (err) {
+      toastError(err?.message || 'Failed to initiate download');
+    }
   };
 
   if (loading) {

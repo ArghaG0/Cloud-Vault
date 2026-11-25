@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useToast } from '../context/ToastContext';
+import { getCategories } from '../api/categories';
 import { mockCategories } from '../data/mockCategories';
 import { formatBytes } from '../utils/formatters';
 import { Button } from '../components/common/Button';
@@ -8,14 +9,41 @@ import { Badge } from '../components/common/Badge';
 import { Modal } from '../components/common/Modal';
 
 export function Categories() {
-  const { success } = useToast();
+  const { success, error: toastError } = useToast();
   const [categories, setCategories] = useState(mockCategories);
+  const [loading, setLoading] = useState(true);
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [newCategoryDesc, setNewCategoryDesc] = useState('');
 
-  const totalDocuments = categories.reduce((sum, c) => sum + c.count, 0);
-  const totalBytes = categories.reduce((sum, c) => sum + c.sizeBytes, 0);
+  useEffect(() => {
+    async function loadCategories() {
+      try {
+        const data = await getCategories();
+        if (Array.isArray(data) && data.length > 0) {
+          // Map backend stats structure to frontend card expectations
+          const mapped = data.map((cat) => ({
+            id: cat.slug || cat.name.toLowerCase().replace(/\s+/g, '-'),
+            name: cat.name,
+            description: cat.description || 'Academic coursework category',
+            icon: cat.icon || 'folder',
+            count: cat.documentCount ?? cat.count ?? 0,
+            sizeBytes: cat.totalBytes ?? cat.sizeBytes ?? 0,
+            color: cat.color || 'blue',
+          }));
+          setCategories(mapped);
+        }
+      } catch (err) {
+        console.warn('Using local categories fallback:', err);
+      } finally {
+        setLoading(false);
+      }
+    }
+    loadCategories();
+  }, []);
+
+  const totalDocuments = categories.reduce((sum, c) => sum + (c.count || 0), 0);
+  const totalBytes = categories.reduce((sum, c) => sum + (c.sizeBytes || 0), 0);
 
   const handleCreateCategory = (e) => {
     e.preventDefault();
@@ -35,7 +63,7 @@ export function Categories() {
     setNewCategoryName('');
     setNewCategoryDesc('');
     setCreateModalOpen(false);
-    success(`Category "${newCat.name}" created successfully`);
+    success(`Category "${newCat.name}" partition created successfully`);
   };
 
   return (

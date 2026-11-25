@@ -1,82 +1,178 @@
-import { mockDocuments } from '../data/mockDocuments';
+import {
+  getDocuments,
+  getDocumentById,
+  requestUploadUrl,
+  finalizeUpload,
+  abortUpload,
+  getDownloadUrl,
+  getPreviewUrl,
+  updateDocument,
+  deleteDocument,
+  purgeDocument,
+  batchDelete,
+  batchMove,
+  uploadToPresignedUrl,
+} from '../api/documents';
 
-let documents = [...mockDocuments];
+function normalizeDoc(doc) {
+  if (!doc) return null;
+  const id = doc.id || doc._id;
+  return {
+    ...doc,
+    id,
+    _id: id,
+    name: doc.displayName || doc.name || doc.originalFilename || 'Document',
+    title: doc.displayName || doc.title || doc.originalFilename || 'Document',
+    displayName: doc.displayName || doc.name || doc.originalFilename || 'Document',
+    originalFilename: doc.originalFilename || doc.name || doc.displayName || 'Document',
+    sizeBytes: doc.fileSize ?? doc.sizeBytes ?? 0,
+    fileSize: doc.fileSize ?? doc.sizeBytes ?? 0,
+    s3Key: doc.s3ObjectKey || doc.s3Key || '',
+    s3ObjectKey: doc.s3ObjectKey || doc.s3Key || '',
+    uploadDate: doc.createdAt || doc.uploadDate || new Date().toISOString(),
+    lastModified: doc.lastModified || doc.updatedAt || doc.createdAt || new Date().toISOString(),
+  };
+}
 
 export const documentService = {
-  async getDocuments() {
-    // Simulated network delay
-    await new Promise(r => setTimeout(r, 100));
-    return [...documents];
-  },
-
-  async getDocumentById(id) {
-    await new Promise(r => setTimeout(r, 80));
-    const doc = documents.find(d => d.id === id);
-    if (!doc) throw new Error(`Document with ID ${id} not found.`);
-    return { ...doc };
-  },
-
-  async createDocument(docData) {
-    await new Promise(r => setTimeout(r, 200));
-    const newDoc = {
-      id: `doc-${Date.now().toString(36)}`,
-      uploadDate: new Date().toISOString(),
-      lastModified: new Date().toISOString(),
-      s3Status: 'synced',
-      kmsEncrypted: true,
-      versionCount: 1,
-      ...docData,
+  /**
+   * Fetches document list with optional filtering and pagination
+   */
+  async getDocuments(params = {}) {
+    const apiParams = {
+      ...params,
+      q: params.search || params.q,
+      limit: params.limit || 50,
     };
-    documents = [newDoc, ...documents];
-    return newDoc;
+    const res = await getDocuments(apiParams);
+    const docs = Array.isArray(res.documents) ? res.documents : [];
+    return docs.map(normalizeDoc);
   },
 
+  /**
+   * Fetches single document by ID
+   */
+  async getDocumentById(id) {
+    const doc = await getDocumentById(id);
+    return normalizeDoc(doc);
+  },
+
+  /**
+   * Updates document name, category, or tags
+   */
   async updateDocument(id, updates) {
-    await new Promise(r => setTimeout(r, 150));
-    documents = documents.map(d => (d.id === id ? { ...d, ...updates, lastModified: new Date().toISOString() } : d));
-    return documents.find(d => d.id === id);
+    const payload = {
+      displayName: updates.displayName || updates.name,
+      category: updates.category,
+      tags: updates.tags,
+    };
+    const updated = await updateDocument(id, payload);
+    return normalizeDoc(updated);
   },
 
+  /**
+   * Soft deletes a document (moves to trash)
+   */
   async deleteDocument(id) {
-    await new Promise(r => setTimeout(r, 150));
-    documents = documents.filter(d => d.id !== id);
-    return true;
+    return await deleteDocument(id);
   },
 
+  /**
+   * Permanently purges document from S3 and database
+   */
+  async purgeDocument(id) {
+    return await purgeDocument(id);
+  },
+
+  /**
+   * Batch deletes documents
+   */
+  async batchDelete(documentIds) {
+    return await batchDelete(documentIds);
+  },
+
+  /**
+   * Batch moves documents to category
+   */
+  async batchMove(documentIds, targetCategory) {
+    return await batchMove(documentIds, targetCategory);
+  },
+
+  /**
+   * Searches documents with text query and filters
+   */
   async searchDocuments(query = '', filters = {}) {
-    await new Promise(r => setTimeout(r, 120));
-    const q = query.toLowerCase().trim();
-    return documents.filter(doc => {
-      const matchQuery = !q || 
-        doc.name.toLowerCase().includes(q) ||
-        doc.title.toLowerCase().includes(q) ||
-        doc.category.toLowerCase().includes(q) ||
-        (doc.tags && doc.tags.some(t => t.toLowerCase().includes(q)));
+    const params = {
+      q: query || undefined,
+      category: filters.category && filters.category !== 'All' ? filters.category : undefined,
+      extension: filters.extension && filters.extension !== 'all' ? filters.extension : undefined,
+      limit: 50,
+    };
+    const res = await getDocuments(params);
+    const docs = Array.isArray(res.documents) ? res.documents : [];
+    return docs.map(normalizeDoc);
+  },
 
-      const matchCategory = !filters.category || filters.category === 'All' || doc.category === filters.category;
-      const matchType = !filters.extension || filters.extension === 'all' || doc.extension === filters.extension;
-      const matchStatus = !filters.s3Status || doc.s3Status === filters.s3Status;
+  /**
+   * Direct S3 Upload Orchestrator:
+   * 1. Requests S3 Presigned Upload URL & reserves quota
+   * 2. Uploads binary data directly to AWS S3 bucket via PUT
+   * 3. Finalizes upload with HeadObject verification & DB record commit
+   */
+  async uploadFile(file, options = {}, onProgress = null) {
+    const filename = file.name;
+    const fileSize = file.size;
+    const mimeType = file.type || 'application/octet-stream';
+    const category = options.category || 'Other Documents';
+    const tags = options.tag ? [options.tag] : (options.tags || []);
 
-      return matchQuery && matchCategory && matchType && matchStatus;
+    // Step 1: Request presigned URL from server
+    if (onProgress) onProgress(15);
+    const presigned = await requestUploadUrl({
+      filename,
+      fileSize,
+      mimeType,
+      category,
     });
+
+    try {
+      // Step 2: Upload directly to S3 PUT URL
+      if (onProgress) onProgress(40);
+      await uploadToPresignedUrl(presigned.uploadUrl, file, mimeType);
+      if (onProgress) onProgress(85);
+
+      // Step 3: Finalize upload with backend verification
+      const finalized = await finalizeUpload({
+        documentId: presigned.documentId,
+        displayName: filename,
+        category,
+        tags,
+      });
+
+      if (onProgress) onProgress(100);
+      return normalizeDoc(finalized);
+    } catch (err) {
+      // Rollback reservation if upload aborted/failed
+      if (presigned?.documentId) {
+        try {
+          await abortUpload(presigned.documentId);
+        } catch {
+          // ignore rollback error
+        }
+      }
+      throw err;
+    }
   },
 
   async requestPresignedUploadUrl(fileMetadata) {
-    // Simulates Flask backend endpoint POST /api/documents/upload-url
-    await new Promise(r => setTimeout(r, 150));
-    return {
-      uploadUrl: `https://cloudvault-s3-prod.s3.amazonaws.com/uploads/${fileMetadata.name}?X-Amz-Security-Token=SIMULATED`,
-      s3Key: `users/stu-84920/${fileMetadata.category || 'general'}/${fileMetadata.name}`,
-    };
+    return await requestUploadUrl(fileMetadata);
   },
 
   async requestPresignedDownloadUrl(id) {
-    // Simulates Flask backend endpoint GET /api/documents/:id/download-url
-    await new Promise(r => setTimeout(r, 100));
-    const doc = documents.find(d => d.id === id);
-    return {
-      downloadUrl: `https://cloudvault-s3-prod.s3.amazonaws.com/${doc?.s3Key}?X-Amz-Signature=SIMULATED`,
-      expiresInSeconds: 300,
-    };
+    return await getDownloadUrl(id);
+  },
+
+  async requestPresignedPreviewUrl(id) {
+    return await getPreviewUrl(id);
   },
 };
