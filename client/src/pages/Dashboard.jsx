@@ -9,9 +9,17 @@ import { Badge } from '../components/common/Badge';
 import { Button } from '../components/common/Button';
 import { Skeleton } from '../components/common/Skeleton';
 
+const CATEGORY_COLORS = [
+  'bg-emerald-500',
+  'bg-blue-500',
+  'bg-amber-500',
+  'bg-purple-500',
+  'bg-cyan-500',
+  'bg-rose-500',
+];
+
 export function Dashboard() {
   const { user } = useAuth();
-  console.log(user)
   const { success, info } = useToast();
 
   const [documents, setDocuments] = useState([]);
@@ -19,15 +27,19 @@ export function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
 
+  const fetchDashboardBundle = async () => {
+    const [docs, dashboardStats] = await Promise.all([
+      documentService.getDocuments(),
+      storageService.getDashboardStats(),
+    ]);
+    setDocuments(docs || []);
+    setStats(dashboardStats || null);
+  };
+
   useEffect(() => {
     async function loadData() {
       try {
-        const [docs, storageStats] = await Promise.all([
-          documentService.getDocuments(),
-          storageService.getStorageStats(),
-        ]);
-        setDocuments(docs);
-        setStats(storageStats);
+        await fetchDashboardBundle();
       } catch (error) {
         console.error('Failed to load dashboard data:', error);
       } finally {
@@ -42,15 +54,28 @@ export function Dashboard() {
     info('Initiating S3 bucket synchronization...');
     try {
       await storageService.syncAllPending();
+      await fetchDashboardBundle();
       success('Amazon S3 synchronization completed. All manifests verified.');
-      const updatedDocs = await documentService.getDocuments();
-      setDocuments(updatedDocs);
     } finally {
       setSyncing(false);
     }
   };
 
-  const usedPercentage = stats ? ((stats.usedBytes / stats.totalBytes) * 100).toFixed(1) : 0;
+  const usedBytes = stats?.storageUsedBytes ?? 0;
+  const quotaBytes = stats?.storageQuotaBytes ?? 10737418240;
+  const usedPercentage =
+    stats?.storagePercentage !== undefined
+      ? Number(stats.storagePercentage).toFixed(1)
+      : quotaBytes > 0
+        ? ((usedBytes / quotaBytes) * 100).toFixed(1)
+        : '0.0';
+
+  const totalDocumentsCount = stats?.totalDocuments ?? documents.length;
+  const activeCategoriesCount =
+    stats?.activeCategoriesCount ?? stats?.categoryDistribution?.length ?? 0;
+  const categoryDistribution = stats?.categoryDistribution ?? [];
+  const s3Health = stats?.s3Health ?? {};
+  const recentDocuments = stats?.recentDocuments ?? [];
 
   if (loading) {
     return (
@@ -68,6 +93,7 @@ export function Dashboard() {
       </div>
     );
   }
+  console.log(stats)
 
   return (
     <div className="flex flex-col gap-8 animate-fade-in">
@@ -76,7 +102,7 @@ export function Dashboard() {
         <div>
           <div className="flex items-center gap-2 mb-1">
             <h1 className="font-headline-sm text-2xl font-bold text-on-surface">
-              Welcome back, {user?.fullName.split(" ")[0]}
+              Welcome back, {user?.fullName?.split(' ')[0] || 'Student'}
             </h1>
             <Badge variant="emerald" size="sm" pulse>
               ACTIVE VAULT
@@ -105,86 +131,110 @@ export function Dashboard() {
         </div>
       </div>
 
+
       {/* 4 Metric Summary Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
         {/* Card 1: Total Documents */}
-        <div className="p-5 rounded-2xl bg-card-surface border border-border-subtle shadow-card flex flex-col justify-between">
-          <div className="flex items-center justify-between">
-            <span className="font-label-caps text-xs text-on-surface-variant">TOTAL DOCUMENTS</span>
-            <div className="w-8 h-8 rounded-lg bg-surface-container flex items-center justify-center text-primary">
-              <span className="material-symbols-outlined text-[18px]">folder_copy</span>
+        <div className="p-4 rounded-2xl bg-card-surface border border-border-subtle shadow-card flex flex-col justify-between gap-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant">
+              Total Documents
+            </span>
+            <div className="w-7 h-7 rounded-lg bg-surface-container flex items-center justify-center text-primary shrink-0">
+              <span className="material-symbols-outlined text-[16px]">folder_copy</span>
             </div>
           </div>
-          <div className="mt-3">
-            <div className="flex items-baseline gap-2">
-              <span className="font-headline-lg text-3xl font-bold text-on-surface">
-                {documents.length}
+
+          <div>
+            <div className="flex items-baseline gap-1.5">
+              <span className="text-2xl font-bold text-on-surface leading-tight">
+                {totalDocumentsCount}
               </span>
               <span className="font-mono text-xs text-on-surface-variant">academic files</span>
             </div>
-            <p className="font-micro-caption text-secondary mt-1">Across 6 active coursework categories</p>
+            <p className="text-xs text-on-surface-variant mt-1 truncate">
+              Across {activeCategoriesCount} active coursework categories
+            </p>
           </div>
         </div>
 
         {/* Card 2: Cloud Storage */}
-        <div className="p-5 rounded-2xl bg-card-surface border border-border-subtle shadow-card flex flex-col justify-between">
-          <div className="flex items-center justify-between">
-            <span className="font-label-caps text-xs text-on-surface-variant">S3 STORAGE USAGE</span>
-            <div className="w-8 h-8 rounded-lg bg-surface-container flex items-center justify-center text-primary">
-              <span className="material-symbols-outlined text-[18px]">cloud_queue</span>
+        <div className="p-4 rounded-2xl bg-card-surface border border-border-subtle shadow-card flex flex-col justify-between gap-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant">
+              S3 Storage Usage
+            </span>
+            <div className="w-7 h-7 rounded-lg bg-surface-container flex items-center justify-center text-primary shrink-0">
+              <span className="material-symbols-outlined text-[16px]">cloud_queue</span>
             </div>
           </div>
-          <div className="mt-3">
-            <div className="flex items-baseline gap-2">
-              <span className="font-headline-lg text-3xl font-bold text-on-surface">
-                {formatBytes(stats?.usedBytes)}
+
+          <div>
+            <div className="flex items-baseline gap-1.5 flex-wrap">
+              <span className="text-2xl font-bold text-on-surface leading-tight">
+                {formatBytes(usedBytes)}
               </span>
               <span className="font-mono text-xs text-on-surface-variant">
-                / {formatBytes(stats?.totalBytes)}
+                / {formatBytes(quotaBytes)}
               </span>
             </div>
             <div className="w-full h-1.5 bg-surface-container rounded-full mt-2 overflow-hidden">
               <div
                 className="h-full bg-primary rounded-full transition-all duration-500"
-                style={{ width: `${usedPercentage}%` }}
+                style={{ width: `${Math.min(Number(usedPercentage) || 0, 100)}%` }}
               />
             </div>
           </div>
         </div>
 
         {/* Card 3: Backup Health */}
-        <div className="p-5 rounded-2xl bg-card-surface border border-border-subtle shadow-card flex flex-col justify-between">
-          <div className="flex items-center justify-between">
-            <span className="font-label-caps text-xs text-on-surface-variant">S3 REPLICATION</span>
-            <div className="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center text-accent-emerald">
-              <span className="material-symbols-outlined text-[18px]">cloud_done</span>
+        <div className="p-4 rounded-2xl bg-card-surface border border-border-subtle shadow-card flex flex-col justify-between gap-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant">
+              S3 Replication
+            </span>
+            <div className="w-7 h-7 rounded-lg bg-emerald-500/10 flex items-center justify-center text-accent-emerald shrink-0">
+              <span className="material-symbols-outlined text-[16px]">cloud_done</span>
             </div>
           </div>
-          <div className="mt-3">
-            <div className="flex items-baseline gap-2">
-              <span className="font-headline-lg text-3xl font-bold text-accent-emerald">
-                100%
+
+          <div>
+            <div className="flex items-baseline gap-2 flex-wrap">
+              <span className="text-xl font-bold text-accent-emerald leading-tight truncate">
+                {s3Health?.status || 'Healthy'}
               </span>
-              <span className="font-mono text-xs text-on-surface-variant">KMS Encrypted</span>
+              <span className="font-mono text-[11px] text-on-surface-variant truncate">
+                {s3Health?.encryption || 'SSE-S3 / KMS'}
+              </span>
             </div>
-            <p className="font-micro-caption text-secondary mt-1">AWS us-east-1 standard bucket</p>
+            <p className="text-xs text-on-surface-variant mt-1 truncate">
+              AWS {s3Health?.region || 'ap-southeast-2'} bucket
+            </p>
           </div>
         </div>
 
         {/* Card 4: Active Categories */}
-        <div className="p-5 rounded-2xl bg-card-surface border border-border-subtle shadow-card flex flex-col justify-between">
-          <div className="flex items-center justify-between">
-            <span className="font-label-caps text-xs text-on-surface-variant">COURSE MODULES</span>
-            <div className="w-8 h-8 rounded-lg bg-surface-container flex items-center justify-center text-primary">
-              <span className="material-symbols-outlined text-[18px]">grid_view</span>
+        <div className="p-4 rounded-2xl bg-card-surface border border-border-subtle shadow-card flex flex-col justify-between gap-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant">
+              Course Modules
+            </span>
+            <div className="w-7 h-7 rounded-lg bg-surface-container flex items-center justify-center text-primary shrink-0">
+              <span className="material-symbols-outlined text-[16px]">grid_view</span>
             </div>
           </div>
-          <div className="mt-3">
-            <div className="flex items-baseline gap-2">
-              <span className="font-headline-lg text-3xl font-bold text-on-surface">6</span>
+
+          <div>
+            <div className="flex items-baseline gap-1.5">
+              <span className="text-2xl font-bold text-on-surface leading-tight">
+                {activeCategoriesCount}
+              </span>
               <span className="font-mono text-xs text-on-surface-variant">Categories</span>
             </div>
-            <Link to="/categories" className="font-micro-caption text-primary hover:underline mt-1 block">
+            <Link
+              to="/categories"
+              className="text-xs text-primary hover:underline mt-1 inline-block"
+            >
               Manage category folders →
             </Link>
           </div>
@@ -203,7 +253,7 @@ export function Dashboard() {
               <span className="material-symbols-outlined text-secondary text-[20px]">bolt</span>
             </div>
             <p className="font-body-sm text-xs text-on-surface-variant mb-5">
-              Quickly drop lecture slides or homework solutions for instant KMS encryption and cloud ingestion.
+              Quickly drop lecture slides or homework solutions for instant encryption and cloud ingestion.
             </p>
             <Link
               to="/upload"
@@ -234,60 +284,67 @@ export function Dashboard() {
                 Storage Distribution
               </h2>
               <span className="font-mono text-xs text-on-surface-variant">
-                {formatBytes(stats?.usedBytes)} used ({usedPercentage}%)
+                {formatBytes(usedBytes)} used ({usedPercentage}%)
               </span>
             </div>
 
             {/* Visual Multi-Segment Bar */}
             <div className="w-full h-3 bg-surface-container rounded-full overflow-hidden flex mb-6">
-              <div className="bg-emerald-500 h-full" style={{ width: '40%' }} title="Lecture Notes (40%)" />
-              <div className="bg-blue-500 h-full" style={{ width: '30%' }} title="Assignments (30%)" />
-              <div className="bg-amber-500 h-full" style={{ width: '18%' }} title="Project Reports (18%)" />
-              <div className="bg-purple-500 h-full" style={{ width: '12%' }} title="Question Papers (12%)" />
+              {categoryDistribution.length > 0 && usedBytes > 0 ? (
+                categoryDistribution.map((item, index) => {
+                  const pct = ((item.totalBytes || 0) / usedBytes) * 100;
+                  const colorClass = CATEGORY_COLORS[index % CATEGORY_COLORS.length];
+                  return (
+                    <div
+                      key={item.category || index}
+                      className={`${colorClass} h-full`}
+                      style={{ width: `${pct}%` }}
+                      title={`${item.category || 'Uncategorized'} (${pct.toFixed(1)}%)`}
+                    />
+                  );
+                })
+              ) : (
+                <div className="bg-surface-container h-full w-full" />
+              )}
             </div>
 
             {/* Category Breakdown Chips */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <div className="p-3 rounded-DEFAULT bg-surface-container-low border border-border-subtle/60">
-                <div className="flex items-center gap-1.5 mb-1">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500" />
-                  <span className="font-label-caps text-[10px] text-on-surface-variant">NOTES</span>
-                </div>
-                <p className="font-mono text-xs font-bold text-on-surface">840 MB</p>
-                <p className="font-micro-caption text-secondary">16 files</p>
+            {categoryDistribution.length > 0 ? (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {categoryDistribution.map((item, index) => {
+                  const dotClass = CATEGORY_COLORS[index % CATEGORY_COLORS.length];
+                  return (
+                    <div
+                      key={item.category || index}
+                      className="p-3 rounded-DEFAULT bg-surface-container-low border border-border-subtle/60"
+                    >
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <span className={`w-2 h-2 rounded-full ${dotClass}`} />
+                        <span className="font-label-caps text-[10px] text-on-surface-variant uppercase truncate">
+                          {item.category || 'GENERAL'}
+                        </span>
+                      </div>
+                      <p className="font-mono text-xs font-bold text-on-surface">
+                        {formatBytes(item.totalBytes || 0)}
+                      </p>
+                      <p className="font-micro-caption text-secondary">
+                        {item.count ?? 0} {(item.count ?? 0) === 1 ? 'file' : 'files'}
+                      </p>
+                    </div>
+                  );
+                })}
               </div>
-
-              <div className="p-3 rounded-DEFAULT bg-surface-container-low border border-border-subtle/60">
-                <div className="flex items-center gap-1.5 mb-1">
-                  <span className="w-2 h-2 rounded-full bg-blue-500" />
-                  <span className="font-label-caps text-[10px] text-on-surface-variant">ASSIGNMENTS</span>
-                </div>
-                <p className="font-mono text-xs font-bold text-on-surface">620 MB</p>
-                <p className="font-micro-caption text-secondary">14 files</p>
-              </div>
-
-              <div className="p-3 rounded-DEFAULT bg-surface-container-low border border-border-subtle/60">
-                <div className="flex items-center gap-1.5 mb-1">
-                  <span className="w-2 h-2 rounded-full bg-amber-500" />
-                  <span className="font-label-caps text-[10px] text-on-surface-variant">PROJECTS</span>
-                </div>
-                <p className="font-mono text-xs font-bold text-on-surface">450 MB</p>
-                <p className="font-micro-caption text-secondary">5 files</p>
-              </div>
-
-              <div className="p-3 rounded-DEFAULT bg-surface-container-low border border-border-subtle/60">
-                <div className="flex items-center gap-1.5 mb-1">
-                  <span className="w-2 h-2 rounded-full bg-purple-500" />
-                  <span className="font-label-caps text-[10px] text-on-surface-variant">EXAMS</span>
-                </div>
-                <p className="font-mono text-xs font-bold text-on-surface">300 MB</p>
-                <p className="font-micro-caption text-secondary">8 files</p>
-              </div>
-            </div>
+            ) : (
+              <p className="font-body-sm text-xs text-on-surface-variant">
+                No category storage breakdown available yet. Upload a document to populate distribution.
+              </p>
+            )}
           </div>
 
           <div className="flex items-center justify-between pt-4 mt-4 border-t border-border-subtle/60 text-xs text-on-surface-variant">
-            <span>S3 Bucket Versioning: Enabled</span>
+            <span>
+              S3 Bucket Versioning: {s3Health?.versioning || 'Enabled'}
+            </span>
             <Link to="/storage" className="text-primary hover:underline font-semibold">
               View Detailed Storage Telemetry →
             </Link>
@@ -304,7 +361,7 @@ export function Dashboard() {
               Recent Academic Documents
             </h2>
             <Link to="/documents" className="text-xs font-semibold text-primary hover:underline">
-              View All Documents ({documents.length}) →
+              View All Documents ({totalDocumentsCount}) →
             </Link>
           </div>
 
@@ -320,18 +377,31 @@ export function Dashboard() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border-subtle/60 font-body-sm text-xs">
-                {documents.slice(0, 5).map((doc) => {
-                  const { icon, color } = getFileIcon(doc.extension);
+                {recentDocuments.map((doc) => {
+                  const docId = doc._id || doc.id;
+                  const docName = doc.displayName || doc.name || doc.originalName || 'Untitled';
+                  const docTitle = doc.title || doc.s3ObjectKey || '';
+                  const docSize = doc.fileSize ?? doc.sizeBytes ?? 0;
+                  const docDate = doc.createdAt || doc.uploadDate;
+                  const ext =
+                    doc.extension ||
+                    (docName.includes('.') ? docName.split('.').pop().toLowerCase() : '');
+                  const { icon, color } = getFileIcon(ext);
+
                   return (
-                    <tr key={doc.id} className="hover:bg-surface-container-low/50 transition-colors">
+                    <tr key={docId} className="hover:bg-surface-container-low/50 transition-colors">
                       <td className="py-3 pl-2">
                         <div className="flex items-center gap-2.5">
                           <div className={`w-7 h-7 rounded-md flex items-center justify-center ${color}`}>
                             <span className="material-symbols-outlined text-[16px]">{icon}</span>
                           </div>
                           <div className="flex flex-col">
-                            <span className="font-medium text-on-surface truncate max-w-xs">{doc.name}</span>
-                            <span className="text-[10px] text-secondary truncate max-w-xs">{doc.title}</span>
+                            <span className="font-medium text-on-surface truncate max-w-xs">
+                              {docName}
+                            </span>
+                            <span className="text-[10px] text-secondary truncate max-w-xs">
+                              {docTitle}
+                            </span>
                           </div>
                         </div>
                       </td>
@@ -339,14 +409,14 @@ export function Dashboard() {
                         <Badge size="sm">{doc.category}</Badge>
                       </td>
                       <td className="py-3 font-mono text-[11px] text-on-surface-variant">
-                        {formatBytes(doc.sizeBytes)}
+                        {formatBytes(docSize)}
                       </td>
                       <td className="py-3 text-secondary text-[11px]">
-                        {formatRelativeTime(doc.uploadDate)}
+                        {docDate ? formatRelativeTime(docDate) : '—'}
                       </td>
                       <td className="py-3 text-right pr-2">
                         <Link
-                          to={`/documents/${doc.id}/preview`}
+                          to={`/documents/${docId}/preview`}
                           className="p-1 rounded-full text-secondary hover:text-on-surface hover:bg-panel-surface transition-colors inline-block"
                           title="Preview"
                         >
@@ -372,44 +442,38 @@ export function Dashboard() {
             </div>
 
             <div className="flex flex-col gap-3.5">
-              <div className="flex items-start gap-3 p-3 rounded-DEFAULT bg-surface-container-low border border-border-subtle/50">
-                <span className="material-symbols-outlined text-accent-emerald text-[18px] mt-0.5">
-                  cloud_done
-                </span>
-                <div className="flex flex-col">
-                  <span className="text-xs font-semibold text-on-surface">Upload Verified</span>
-                  <span className="text-[11px] text-on-surface-variant">
-                    CloudVault_SRS_v1.0.docx ingested with SSE-KMS
-                  </span>
-                  <span className="font-mono text-[9px] text-secondary mt-1">10m ago</span>
-                </div>
-              </div>
+              {recentDocuments.slice(0, 3).map((doc) => {
+                const docId = doc._id || doc.id;
+                const docName = doc.displayName || doc.name || 'Document';
+                const docDate = doc.createdAt || doc.uploadDate;
+                return (
+                  <div
+                    key={`act-${docId}`}
+                    className="flex items-start gap-3 p-3 rounded-DEFAULT bg-surface-container-low border border-border-subtle/50"
+                  >
+                    <span className="material-symbols-outlined text-accent-emerald text-[18px] mt-0.5">
+                      cloud_done
+                    </span>
+                    <div className="flex flex-col min-w-0">
+                      <span className="text-xs font-semibold text-on-surface">
+                        {doc.s3Status || 'Synced'}
+                      </span>
+                      <span className="text-[11px] text-on-surface-variant truncate">
+                        {docName} stored in {s3Health?.region || 'ap-southeast-2'}
+                      </span>
+                      <span className="font-mono text-[9px] text-secondary mt-1">
+                        {docDate ? formatRelativeTime(docDate) : 'Just now'}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
 
-              <div className="flex items-start gap-3 p-3 rounded-DEFAULT bg-surface-container-low border border-border-subtle/50">
-                <span className="material-symbols-outlined text-blue-500 text-[18px] mt-0.5">
-                  history
-                </span>
-                <div className="flex flex-col">
-                  <span className="text-xs font-semibold text-on-surface">Version Retained</span>
-                  <span className="text-[11px] text-on-surface-variant">
-                    CS301_Distributed_Systems preserved previous revision
-                  </span>
-                  <span className="font-mono text-[9px] text-secondary mt-1">2h ago</span>
-                </div>
-              </div>
-
-              <div className="flex items-start gap-3 p-3 rounded-DEFAULT bg-surface-container-low border border-border-subtle/50">
-                <span className="material-symbols-outlined text-accent-emerald text-[18px] mt-0.5">
-                  verified_user
-                </span>
-                <div className="flex flex-col">
-                  <span className="text-xs font-semibold text-on-surface">KMS Checksum Match</span>
-                  <span className="text-[11px] text-on-surface-variant">
-                    SHA-256 hash verified against S3 ETag
-                  </span>
-                  <span className="font-mono text-[9px] text-secondary mt-1">5h ago</span>
-                </div>
-              </div>
+              {recentDocuments.length === 0 && (
+                <p className="text-xs text-on-surface-variant">
+                  No recent S3 activity yet.
+                </p>
+              )}
             </div>
           </div>
 

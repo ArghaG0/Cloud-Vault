@@ -1,6 +1,6 @@
-import { mockBackupLogs } from '../data/mockBackupLogs';
-
-let backupLogs = [...mockBackupLogs];
+const API_BASE_URL = (
+  import.meta.env.VITE_API_URL || 'http://localhost:5001'
+).replace(/\/+$/, '');
 
 let backupRules = {
   instantIngest: true,
@@ -9,42 +9,86 @@ let backupRules = {
   sseKmsEncryption: true,
 };
 
+async function requestJson(path, options = {}) {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    ...options,
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options.headers || {}),
+    },
+  });
+
+  const payload = await response.json().catch(() => ({}));
+
+  if (!response.ok || payload.success === false) {
+    throw new Error(
+      payload.error || payload.message || `Request failed (${response.status})`
+    );
+  }
+
+  return payload;
+}
+
 export const storageService = {
+  // GET /api/dashboard/stats
+  async getDashboardStats() {
+    const response = await requestJson('/api/dashboard/stats', {
+      method: 'GET',
+    });
+
+    return response.data;
+  },
+
+  // GET /api/storage/telemetry
   async getStorageStats() {
-    await new Promise(r => setTimeout(r, 100));
+    const response = await requestJson('/api/storage/telemetry', {
+      method: 'GET',
+    });
+
+    return response.data;
+  },
+
+  // GET /api/storage/logs?page=1&limit=10
+  async getBackupLogs({ page = 1, limit = 10 } = {}) {
+    const searchParams = new URLSearchParams({
+      page: String(page),
+      limit: String(limit),
+    });
+
+    const response = await requestJson(
+      `/api/storage/logs?${searchParams.toString()}`,
+      {
+        method: 'GET',
+      }
+    );
+
     return {
-      usedBytes: 2472000000, // 2.47 GB
-      totalBytes: 10737418240, // 10 GB
-      totalDocuments: 48,
-      syncedDocuments: 46,
-      pendingDocuments: 1,
-      failedDocuments: 1,
-      bucketRegion: 'us-east-1',
-      kmsKeyAlias: 'alias/cloudvault-student-kms',
+      logs: response.data || [],
+      pagination: response.pagination || {
+        total: 0,
+        page: Number(page) || 1,
+        limit: Number(limit) || 10,
+        totalPages: 1,
+      },
     };
   },
 
-  async getBackupLogs() {
-    await new Promise(r => setTimeout(r, 100));
-    return [...backupLogs];
-  },
-
+  // Keeps existing UI actions working until dedicated backend endpoints are added
   async verifyChecksum(logId) {
-    await new Promise(r => setTimeout(r, 400));
-    backupLogs = backupLogs.map(l => (l.id === logId ? { ...l, verified: true } : l));
-    return backupLogs.find(l => l.id === logId);
+    const { logs } = await this.getBackupLogs({ page: 1, limit: 50 });
+    const target = logs.find((l) => l._id === logId || l.id === logId);
+    return target
+      ? { ...target, verified: Boolean(target.sha256Checksum) }
+      : null;
   },
 
   async retryBackup(logId) {
-    await new Promise(r => setTimeout(r, 500));
-    backupLogs = backupLogs.map(l => (l.id === logId ? { ...l, status: 'synced', errorReason: null, verified: true } : l));
-    return backupLogs.find(l => l.id === logId);
+    return this.verifyChecksum(logId);
   },
 
   async syncAllPending() {
-    await new Promise(r => setTimeout(r, 700));
-    backupLogs = backupLogs.map(l => ({ ...l, status: 'synced', errorReason: null, verified: true }));
-    return [...backupLogs];
+    return this.getDashboardStats();
   },
 
   async getBackupRules() {

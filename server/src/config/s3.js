@@ -25,5 +25,5 @@ if (!isOffline && process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS
 module.exports = {
   s3Client,
   isOffline,
-  bucketName: process.env.AWS_BUCKET_NAME || 'cloudvault-storage-bucket',
+  bucketName: process.env.AWS_BUCKET_NAME,
 };
