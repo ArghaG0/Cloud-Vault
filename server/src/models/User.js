@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
+const { PER_ACCOUNT_MAX_BYTES } = require('./SystemStorage');
 
 const userSchema = new mongoose.Schema(
   {
@@ -40,7 +41,7 @@ const userSchema = new mongoose.Schema(
     },
     storageQuotaBytes: {
       type: Number,
-      default: 5368709120, // 5 GB (AWS S3 Free Tier safety limit)
+      default: PER_ACCOUNT_MAX_BYTES, // 200 MB per account
     },
     storageUsedBytes: {
       type: Number,
@@ -76,6 +77,8 @@ userSchema.methods.comparePassword = async function (candidatePassword) {
 
 // Safe profile view omitting sensitive fields
 userSchema.methods.toSafeObject = function () {
+  const rawQuota = this.storageQuotaBytes ?? PER_ACCOUNT_MAX_BYTES;
+  const effectiveQuota = Math.min(rawQuota, PER_ACCOUNT_MAX_BYTES);
   return {
     id: this._id,
     fullName: this.fullName,
@@ -84,12 +87,13 @@ userSchema.methods.toSafeObject = function () {
     department: this.department,
     semester: this.semester,
     role: this.role,
-    storageQuotaBytes: this.storageQuotaBytes,
+    storageQuotaBytes: effectiveQuota,
     storageUsedBytes: this.storageUsedBytes,
     reservedBytes: this.reservedBytes,
-    storagePercentage: Number(
-      ((this.storageUsedBytes / this.storageQuotaBytes) * 100).toFixed(2)
-    ),
+    storagePercentage:
+      effectiveQuota > 0
+        ? Number(((this.storageUsedBytes / effectiveQuota) * 100).toFixed(2))
+        : 0,
     lastLogin: this.lastLogin,
     createdAt: this.createdAt,
   };

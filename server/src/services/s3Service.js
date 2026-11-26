@@ -79,6 +79,7 @@ async function generatePresignedUploadUrl(userId, category, filename, mimeType, 
     Bucket: bucketName,
     Key: s3ObjectKey,
     ContentType: mimeType || validMime,
+    ContentLength: fileSize,
   });
 
   const uploadUrl = await getSignedUrl(s3Client, command, { expiresIn: 900 });

@@ -63,7 +63,11 @@ export function Dashboard() {
   };
 
   const usedBytes = stats?.storageUsedBytes ?? 0;
-  const quotaBytes = stats?.storageQuotaBytes ?? 10737418240;
+  const quotaBytes = stats?.storageQuotaBytes ?? 209715200; // 200 MB per-account default
+  const isGlobalStorageFull = Boolean(stats?.isGlobalStorageFull);
+  const isPersonalStorageFull = Boolean(
+    stats?.isPersonalStorageFull || (quotaBytes > 0 && usedBytes >= quotaBytes)
+  );
   const usedPercentage =
     stats?.storagePercentage !== undefined
       ? Number(stats.storagePercentage).toFixed(1)
@@ -125,12 +129,46 @@ export function Dashboard() {
             Run Sync
           </Button>
           <Link to="/upload">
-            <Button variant="primary" size="sm" icon="cloud_upload">
+            <Button
+              variant="primary"
+              size="sm"
+              icon="cloud_upload"
+              disabled={isGlobalStorageFull || isPersonalStorageFull}
+            >
               Upload File
             </Button>
           </Link>
         </div>
       </div>
+
+      {isGlobalStorageFull && (
+        <div className="p-4 rounded-2xl bg-error/10 border border-error/30 text-error flex items-start gap-3">
+          <span className="material-symbols-outlined text-[20px] shrink-0 mt-0.5">cloud_off</span>
+          <div className="text-xs">
+            <p className="font-semibold">Cloud Storage Capacity Has Run Out (5 GB Global Limit Reached)</p>
+            <p className="opacity-90 mt-0.5">
+              Global S3 storage across all accounts has reached the 5 GB limit. New uploads are disabled until files are permanently deleted.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {!isGlobalStorageFull && isPersonalStorageFull && (
+        <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-500 flex items-start justify-between gap-3">
+          <div className="flex items-start gap-3 text-xs">
+            <span className="material-symbols-outlined text-[20px] shrink-0 mt-0.5">warning</span>
+            <div>
+              <p className="font-semibold">Personal Storage Quota Reached (200 MB Limit)</p>
+              <p className="opacity-90 mt-0.5">
+                You have used all 200 MB of your personal vault quota. Delete files in My Documents to free up space.
+              </p>
+            </div>
+          </div>
+          <Link to="/documents" className="shrink-0 text-xs font-semibold underline">
+            Manage Files
+          </Link>
+        </div>
+      )}
 
 
       {/* 4 Metric Summary Cards */}

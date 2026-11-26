@@ -37,7 +37,7 @@ export const storageService = {
     return {
       ...data,
       usedBytes: data.storageUsedBytes ?? data.usedBytes ?? 0,
-      totalBytes: data.storageQuotaBytes ?? data.totalBytes ?? 5368709120,
+      totalBytes: data.storageQuotaBytes ?? data.totalBytes ?? 209715200,
     };
   },
 

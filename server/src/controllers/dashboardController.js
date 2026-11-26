@@ -1,13 +1,42 @@
 const Document = require('../models/Document');
-const User = require('../models/User');
+const SystemStorage = require('../models/SystemStorage');
 const s3Service = require('../services/s3Service');
+
+const { PER_ACCOUNT_MAX_BYTES, GLOBAL_BUCKET_MAX_BYTES } = SystemStorage;
+
+function buildQuotaTelemetry(user, globalCounter) {
+  const storageUsedBytes = user.storageUsedBytes || 0;
+  const reservedBytes = user.reservedBytes || 0;
+  const rawQuota = user.storageQuotaBytes ?? PER_ACCOUNT_MAX_BYTES;
+  const storageQuotaBytes = Math.min(rawQuota, PER_ACCOUNT_MAX_BYTES);
+
+  const globalStorageUsedBytes = globalCounter?.storageUsedBytes || 0;
+  const globalStorageReservedBytes = globalCounter?.reservedBytes || 0;
+  const globalStorageQuotaBytes = globalCounter?.storageQuotaBytes ?? GLOBAL_BUCKET_MAX_BYTES;
+
+  return {
+    storageUsedBytes,
+    reservedBytes,
+    storageQuotaBytes,
+    storagePercentage:
+      storageQuotaBytes > 0
+        ? Number(((storageUsedBytes / storageQuotaBytes) * 100).toFixed(2))
+        : 0,
+    isPersonalStorageFull: storageUsedBytes + reservedBytes >= storageQuotaBytes,
+    globalStorageUsedBytes,
+    globalStorageReservedBytes,
+    globalStorageQuotaBytes,
+    isGlobalStorageFull:
+      globalStorageUsedBytes + globalStorageReservedBytes >= globalStorageQuotaBytes,
+  };
+}
 
 // GET /api/dashboard/stats
 exports.getStats = async (req, res) => {
   try {
     const userId = req.user._id;
 
-    const [totalDocs, recentDocs, categoryAgg, s3Telemetry] = await Promise.all([
+    const [totalDocs, recentDocs, categoryAgg, s3Telemetry, globalCounter] = await Promise.all([
       Document.countDocuments({ userId, isTrash: false, status: 'COMPLETED' }),
       Document.find({ userId, isTrash: false, status: 'COMPLETED' })
         .sort({ createdAt: -1 })
@@ -23,13 +52,12 @@ exports.getStats = async (req, res) => {
         },
       ]),
       s3Service.getBucketTelemetry(),
+      SystemStorage.getOrInitGlobal(),
     ]);
 
-    const user = req.user;
-    const storageUsedBytes = user.storageUsedBytes || 0;
-    const storageQuotaBytes = user.storageQuotaBytes || 5368709120; // 5 GB AWS S3 Free Tier limit
+    const quota = buildQuotaTelemetry(req.user, globalCounter);
 
-    const categoryDistribution = categoryAgg.map(item => ({
+    const categoryDistribution = categoryAgg.map((item) => ({
       category: item._id,
       count: item.count,
       totalBytes: item.totalBytes,
@@ -39,9 +67,7 @@ exports.getStats = async (req, res) => {
       success: true,
       data: {
         totalDocuments: totalDocs,
-        storageUsedBytes,
-        storageQuotaBytes,
-        storagePercentage: Number(((storageUsedBytes / storageQuotaBytes) * 100).toFixed(2)),
+        ...quota,
         activeCategoriesCount: categoryAgg.length,
         s3Health: s3Telemetry,
         categoryDistribution,
@@ -58,7 +84,7 @@ exports.getStorageTelemetry = async (req, res) => {
   try {
     const userId = req.user._id;
 
-    const [s3Telemetry, verifiedCount, totalDocs] = await Promise.all([
+    const [s3Telemetry, verifiedCount, totalDocs, globalCounter] = await Promise.all([
       s3Service.getBucketTelemetry(),
       Document.countDocuments({
         userId,
@@ -67,7 +93,10 @@ exports.getStorageTelemetry = async (req, res) => {
         sha256Checksum: { $ne: '' },
       }),
       Document.countDocuments({ userId, isTrash: false, status: 'COMPLETED' }),
+      SystemStorage.getOrInitGlobal(),
     ]);
+
+    const quota = buildQuotaTelemetry(req.user, globalCounter);
 
     res.json({
       success: true,
@@ -75,8 +104,7 @@ exports.getStorageTelemetry = async (req, res) => {
         ...s3Telemetry,
         verifiedChecksumsCount: verifiedCount,
         totalDocuments: totalDocs,
-        storageUsedBytes: req.user.storageUsedBytes,
-        storageQuotaBytes: req.user.storageQuotaBytes,
+        ...quota,
       },
     });
   } catch (error) {

@@ -7,9 +7,9 @@ import { formatBytes, getFileIcon } from '../utils/formatters';
 import { Button } from '../components/common/Button';
 import { Badge } from '../components/common/Badge';
 
-// AWS S3 Free Tier Constraints
-const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024; // 50 MB
-const MAX_STORAGE_LIMIT_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB
+// Storage Constraints
+const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024; // 50 MB per file
+const MAX_STORAGE_LIMIT_BYTES = 200 * 1024 * 1024; // 200 MB per account
 
 export function Upload() {
   const { success, error: toastError, info } = useToast();
@@ -35,9 +35,18 @@ export function Upload() {
     loadStorage();
   }, []);
 
+  const isGlobalStorageFull = Boolean(storageStats?.isGlobalStorageFull);
+  const isPersonalStorageFull = Boolean(
+    storageStats?.isPersonalStorageFull ||
+      (storageStats &&
+        (storageStats.storageUsedBytes || 0) >=
+          (storageStats.storageQuotaBytes || MAX_STORAGE_LIMIT_BYTES))
+  );
+  const uploadsBlocked = isGlobalStorageFull || isPersonalStorageFull;
+
   const handleDragOver = (e) => {
     e.preventDefault();
-    setIsDragging(true);
+    if (!uploadsBlocked) setIsDragging(true);
   };
 
   const handleDragLeave = () => {
@@ -47,6 +56,14 @@ export function Upload() {
   const handleDrop = (e) => {
     e.preventDefault();
     setIsDragging(false);
+    if (uploadsBlocked) {
+      toastError(
+        isGlobalStorageFull
+          ? 'Global cloud storage (5 GB) has run out. Uploads are disabled.'
+          : 'Your 200 MB personal quota is full.'
+      );
+      return;
+    }
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       addFilesToQueue(Array.from(e.dataTransfer.files));
     }
@@ -59,22 +76,27 @@ export function Upload() {
   };
 
   const addFilesToQueue = (files) => {
+    if (isGlobalStorageFull) {
+      toastError('Global cloud storage capacity (5 GB) has run out. Uploads are disabled.');
+      return;
+    }
+
     const validFiles = [];
-    const usedBytes = storageStats?.storageUsedBytes || 0;
+    const usedBytes = (storageStats?.storageUsedBytes || 0) + (storageStats?.reservedBytes || 0);
     const quotaBytes = storageStats?.storageQuotaBytes || MAX_STORAGE_LIMIT_BYTES;
     const remainingQuota = Math.max(0, quotaBytes - usedBytes);
 
     for (const file of files) {
-      // 1. Check single file Free Tier limit
+      // 1. Check single file limit
       if (file.size > MAX_FILE_SIZE_BYTES) {
-        toastError(`"${file.name}" exceeds the 50 MB AWS S3 Free Tier per-file limit.`);
+        toastError(`"${file.name}" exceeds the 50 MB per-file limit.`);
         continue;
       }
 
-      // 2. Check remaining storage space
+      // 2. Check remaining personal storage space
       if (file.size > remainingQuota) {
         toastError(
-          `Uploading "${file.name}" (${formatBytes(file.size)}) would exceed your 5 GB AWS S3 Free Tier quota (${formatBytes(remainingQuota)} remaining).`
+          `Uploading "${file.name}" (${formatBytes(file.size)}) would exceed your 200 MB personal quota (${formatBytes(remainingQuota)} remaining).`
         );
         continue;
       }
@@ -186,7 +208,7 @@ export function Upload() {
               Direct AWS S3 Upload Engine
             </h1>
             <Badge variant="emerald" size="sm">
-              Free Tier Enforced (5 GB)
+              200 MB / Account • 5 GB Global
             </Badge>
           </div>
           <p className="font-body-sm text-xs text-on-surface-variant">
@@ -200,7 +222,7 @@ export function Upload() {
               variant="primary"
               size="sm"
               onClick={startBatchUpload}
-              disabled={isUploadingAll || queue.every((i) => i.status === 'complete')}
+              disabled={uploadsBlocked || isUploadingAll || queue.every((i) => i.status === 'complete')}
               icon="cloud_upload"
             >
               {isUploadingAll ? 'Uploading to S3...' : 'Upload All to S3'}
@@ -214,16 +236,47 @@ export function Upload() {
         </div>
       </div>
 
+      {isGlobalStorageFull && (
+        <div className="p-4 rounded-2xl bg-error/10 border border-error/30 text-error flex items-start gap-3">
+          <span className="material-symbols-outlined text-[20px] shrink-0 mt-0.5">cloud_off</span>
+          <div className="text-xs">
+            <p className="font-semibold">Cloud Storage Capacity Has Run Out (5 GB Global Limit Reached)</p>
+            <p className="opacity-90 mt-0.5">
+              Global S3 storage across all accounts has reached 5 GB. No further uploads are allowed until files are permanently deleted.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {!isGlobalStorageFull && isPersonalStorageFull && (
+        <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-500 flex items-start justify-between gap-3">
+          <div className="flex items-start gap-3 text-xs">
+            <span className="material-symbols-outlined text-[20px] shrink-0 mt-0.5">warning</span>
+            <div>
+              <p className="font-semibold">Personal Storage Quota Full (200 MB Limit)</p>
+              <p className="opacity-90 mt-0.5">
+                You have reached your 200 MB personal account limit. Delete existing files in My Documents to free up space.
+              </p>
+            </div>
+          </div>
+          <Link to="/documents" className="shrink-0 text-xs font-semibold underline">
+            My Documents
+          </Link>
+        </div>
+      )}
+
       {/* Dropzone Area */}
       <div
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
-        onClick={() => fileInputRef.current && fileInputRef.current.click()}
-        className={`w-full border-2 border-dashed rounded-2xl p-10 flex flex-col items-center justify-center text-center cursor-pointer transition-all ${
-          isDragging
-            ? 'border-primary bg-surface-container-high scale-[0.99]'
-            : 'border-border-subtle hover:border-primary/60 bg-panel-surface/60'
+        onClick={() => !uploadsBlocked && fileInputRef.current && fileInputRef.current.click()}
+        className={`w-full border-2 border-dashed rounded-2xl p-10 flex flex-col items-center justify-center text-center transition-all ${
+          uploadsBlocked
+            ? 'border-error/30 bg-surface-container-low/40 opacity-60 cursor-not-allowed'
+            : isDragging
+              ? 'border-primary bg-surface-container-high scale-[0.99] cursor-pointer'
+              : 'border-border-subtle hover:border-primary/60 bg-panel-surface/60 cursor-pointer'
         }`}
       >
         <input
@@ -250,7 +303,7 @@ export function Upload() {
         <div className="flex flex-wrap items-center justify-center gap-2 mt-5">
           <Badge size="sm">PDF, DOCX, PPTX, ZIP, PNG, TXT</Badge>
           <Badge size="sm">Max 50 MB per file</Badge>
-          <Badge size="sm">5 GB Bucket Free Tier Cap</Badge>
+          <Badge size="sm">200 MB / Account • 5 GB Global Cap</Badge>
         </div>
       </div>
 

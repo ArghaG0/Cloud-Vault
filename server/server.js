@@ -5,6 +5,10 @@ const cookieParser = require('cookie-parser');
 require('dotenv').config();
 
 const connectDB = require('./src/config/db');
+const {
+  cleanupExpiredReservations,
+  reconcileAllStorage,
+} = require('./src/services/storageReconciliationService');
 
 // Route imports
 const authRoutes = require('./src/routes/authRoutes');
@@ -16,8 +20,11 @@ const activityRoutes = require('./src/routes/activityRoutes');
 const app = express();
 const PORT = process.env.PORT || 5001;
 
-// Connect to Database
-connectDB();
+// Database initialization: only auto-connect immediately when imported;
+// when launched directly as main module, startServer() awaits DB + reconciliation before listening.
+if (require.main !== module) {
+  connectDB();
+}
 
 // Global Middleware
 const allowedOrigins = [
@@ -102,14 +109,40 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Start Server
-if (require.main === module) {
+// Start Server (await DB connection + startup reconciliation before accepting requests)
+async function startServer() {
+  await connectDB();
+  try {
+    await cleanupExpiredReservations();
+    await reconcileAllStorage();
+  } catch (err) {
+    console.warn('[Storage Reconciliation] Startup reconciliation skipped:', err.message);
+  }
+
   app.listen(PORT, () => {
     console.log(`===============================================`);
     console.log(`CloudVault Server running on http://localhost:${PORT}`);
     console.log(`Health Check: http://localhost:${PORT}/api/health`);
     console.log(`===============================================`);
   });
+
+  // Periodic cleanup of expired/stuck reservations (every 5 minutes)
+  setInterval(() => {
+    cleanupExpiredReservations().catch((err) =>
+      console.warn('[Storage Cleanup] Scheduled reservation cleanup error:', err.message)
+    );
+  }, 5 * 60 * 1000).unref();
+
+  // Periodic full storage reconciliation (every 60 minutes) for standalone crash recovery
+  setInterval(() => {
+    reconcileAllStorage().catch((err) =>
+      console.warn('[Storage Reconciliation] Scheduled reconciliation error:', err.message)
+    );
+  }, 60 * 60 * 1000).unref();
+}
+
+if (require.main === module) {
+  startServer();
 }
 
 module.exports = app;

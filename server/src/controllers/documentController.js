@@ -1,13 +1,23 @@
 const Document = require('../models/Document');
 const User = require('../models/User');
+const SystemStorage = require('../models/SystemStorage');
 const Activity = require('../models/Activity');
 const s3Service = require('../services/s3Service');
+const { runWithOptionalTransaction } = require('../utils/dbTransaction');
 
-// AWS S3 Free Tier Cap: 5 GB total storage, max 50 MB per single file
-const AWS_S3_FREE_TIER_MAX_FILE_BYTES = 50 * 1024 * 1024; // 50 MB
-const AWS_S3_FREE_TIER_MAX_TOTAL_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB
+const { PER_ACCOUNT_MAX_BYTES } = SystemStorage;
+const MAX_SINGLE_FILE_BYTES = 50 * 1024 * 1024; // 50 MB per single file
 
-// POST /api/documents/upload-url (Step 1 of direct S3 upload: Quota reservation + Presigned URL)
+// Helper to clamp decrements safely at >= 0 (Mongoose 9 requires updatePipeline: true)
+function safeSubtract(field, amount) {
+  return [{ $set: { [field]: { $max: [0, { $subtract: [`$${field}`, amount] }] } } }];
+}
+
+function pipelineOpts(session) {
+  return { updatePipeline: true, ...(session ? { session } : {}) };
+}
+
+// POST /api/documents/upload-url (Step 1: Global + Personal atomic quota reservation + Presigned URL)
 exports.requestUploadUrl = async (req, res) => {
   try {
     const { filename, category, mimeType, fileSize } = req.body;
@@ -25,48 +35,18 @@ exports.requestUploadUrl = async (req, res) => {
       return res.status(400).json({ success: false, error: 'Invalid file size specified.' });
     }
 
-    // Free Tier single file safety check (50 MB limit)
-    if (numBytes > AWS_S3_FREE_TIER_MAX_FILE_BYTES) {
+    if (numBytes > MAX_SINGLE_FILE_BYTES) {
       return res.status(400).json({
         success: false,
-        error: `File size exceeds the 50 MB limit to preserve AWS S3 Free Tier tiering.`,
+        error: 'File size exceeds the 50 MB per-file limit.',
         code: 'FILE_TOO_LARGE',
       });
     }
 
-    // Atomic Quota Check & Reservation:
-    // Ensure (storageUsedBytes + reservedBytes + fileSize) <= storageQuotaBytes
-    // and also does not exceed AWS Free Tier 5GB absolute ceiling
-    const user = await User.findById(userId);
-    const effectiveQuota = Math.min(
-      user?.storageQuotaBytes || AWS_S3_FREE_TIER_MAX_TOTAL_BYTES,
-      AWS_S3_FREE_TIER_MAX_TOTAL_BYTES
-    );
-
-    const updatedUser = await User.findOneAndUpdate(
-      {
-        _id: userId,
-        $expr: {
-          $lte: [
-            { $add: ['$storageUsedBytes', '$reservedBytes', numBytes] },
-            effectiveQuota,
-          ],
-        },
-      },
-      { $inc: { reservedBytes: numBytes } },
-      { returnDocument: 'after' }
-    );
-
-    if (!updatedUser) {
-      return res.status(403).json({
-        success: false,
-        error: 'Storage quota exceeded. Free Tier limit is 5 GB. Please delete files before uploading.',
-        code: 'QUOTA_EXCEEDED',
-      });
-    }
-
-    // Generate S3 presigned PUT URL
     const docCategory = category || 'Other Documents';
+    const extension = filename.split('.').pop().toLowerCase();
+
+    // Generate presigned S3 PUT URL (validates extension/size locally without network I/O)
     const uploadDetails = await s3Service.generatePresignedUploadUrl(
       userId.toString(),
       docCategory,
@@ -75,20 +55,98 @@ exports.requestUploadUrl = async (req, res) => {
       numBytes
     );
 
-    const extension = filename.split('.').pop().toLowerCase();
+    const reservedDoc = await runWithOptionalTransaction(async (session) => {
+      const opts = session ? { session } : {};
+      await SystemStorage.getOrInitGlobal(session);
 
-    // Create a temporary RESERVED document record (15-minute TTL)
-    const reservedDoc = await Document.create({
-      userId,
-      originalFilename: filename,
-      displayName: filename,
-      category: docCategory,
-      s3ObjectKey: uploadDetails.s3ObjectKey,
-      fileSize: numBytes,
-      mimeType: mimeType || 'application/octet-stream',
-      extension,
-      status: 'RESERVED',
-      expiresAt: new Date(Date.now() + 15 * 60 * 1000), // 15 mins
+      // 1. Atomic Global 5 GB Cap Reservation
+      const globalCounter = await SystemStorage.findOneAndUpdate(
+        {
+          _id: 'global',
+          $expr: {
+            $lte: [
+              { $add: ['$storageUsedBytes', '$reservedBytes', numBytes] },
+              '$storageQuotaBytes',
+            ],
+          },
+        },
+        { $inc: { reservedBytes: numBytes } },
+        { returnDocument: 'after', ...opts }
+      );
+
+      if (!globalCounter) {
+        const err = new Error(
+          'Global cloud storage capacity (5 GB) has run out. No further uploads are allowed.'
+        );
+        err.status = 403;
+        err.code = 'GLOBAL_STORAGE_FULL';
+        throw err;
+      }
+
+      // 2. Atomic Personal 200 MB Cap Reservation
+      const user = await User.findById(userId).session(session || null);
+      const rawQuota = user?.storageQuotaBytes ?? PER_ACCOUNT_MAX_BYTES;
+      const effectiveQuota = Math.min(rawQuota, PER_ACCOUNT_MAX_BYTES);
+
+      const updatedUser = await User.findOneAndUpdate(
+        {
+          _id: userId,
+          $expr: {
+            $lte: [
+              { $add: ['$storageUsedBytes', '$reservedBytes', numBytes] },
+              effectiveQuota,
+            ],
+          },
+        },
+        { $inc: { reservedBytes: numBytes } },
+        { returnDocument: 'after', ...opts }
+      );
+
+      if (!updatedUser) {
+        if (!session) {
+          await SystemStorage.updateOne(
+            { _id: 'global' },
+            safeSubtract('reservedBytes', numBytes),
+            pipelineOpts(null)
+          );
+        }
+        const err = new Error(
+          'Personal storage quota exceeded (200 MB limit). Please delete files before uploading.'
+        );
+        err.status = 403;
+        err.code = 'QUOTA_EXCEEDED';
+        throw err;
+      }
+
+      // 3. Create RESERVED document record (15-minute TTL)
+      try {
+        const [created] = await Document.create(
+          [
+            {
+              userId,
+              originalFilename: filename,
+              displayName: filename,
+              category: docCategory,
+              s3ObjectKey: uploadDetails.s3ObjectKey,
+              fileSize: numBytes,
+              mimeType: mimeType || 'application/octet-stream',
+              extension,
+              status: 'RESERVED',
+              expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+            },
+          ],
+          opts
+        );
+        return created;
+      } catch (createErr) {
+        if (!session) {
+          await Promise.all([
+            User.updateOne({ _id: userId }, safeSubtract('reservedBytes', numBytes), pipelineOpts(null)),
+            SystemStorage.updateOne({ _id: 'global' }, safeSubtract('reservedBytes', numBytes), pipelineOpts(null)),
+          ]);
+        }
+        throw createErr;
+      }
     });
 
     res.json({
@@ -102,75 +160,205 @@ exports.requestUploadUrl = async (req, res) => {
       },
     });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    res.status(error.status || 500).json({
+      success: false,
+      error: error.message,
+      ...(error.code ? { code: error.code } : {}),
+    });
   }
 };
 
-// POST /api/documents/finalize (Step 2 of upload: S3 HeadObject verification + DB commit)
+// POST /api/documents/finalize (Step 2: S3 HeadObject verification + idempotent DB commit)
 exports.finalizeUpload = async (req, res) => {
   try {
     const { documentId, displayName, category, sha256Checksum, tags } = req.body;
     const userId = req.user._id;
 
-    const doc = await Document.findOne({ _id: documentId, userId });
-    if (!doc) {
+    const existing = await Document.findOne({ _id: documentId, userId });
+    if (!existing) {
       return res.status(404).json({ success: false, error: 'Upload reservation not found.' });
     }
 
-    if (doc.status === 'COMPLETED') {
-      return res.json({ success: true, data: doc });
+    // Idempotent return if already finalized
+    if (existing.status === 'COMPLETED') {
+      return res.json({ success: true, data: existing });
     }
 
-    // Verify presence and size on S3 via HeadObject
+    if (existing.status === 'FAILED') {
+      return res.status(400).json({
+        success: false,
+        error: 'Upload reservation has expired or already failed.',
+      });
+    }
+
+    // Atomically claim RESERVED (or stale VERIFYING > 60s) -> VERIFYING
+    const staleThreshold = new Date(Date.now() - 60 * 1000);
+    const claimed = await Document.findOneAndUpdate(
+      {
+        _id: documentId,
+        userId,
+        $or: [
+          { status: 'RESERVED' },
+          { status: 'VERIFYING', verifyingAt: { $lt: staleThreshold } },
+        ],
+      },
+      { $set: { status: 'VERIFYING', verifyingAt: new Date() } },
+      { returnDocument: 'after' }
+    );
+
+    if (!claimed) {
+      const latest = await Document.findOne({ _id: documentId, userId });
+      if (latest?.status === 'COMPLETED') {
+        return res.json({ success: true, data: latest });
+      }
+      return res.status(409).json({
+        success: false,
+        error: 'Upload is currently being verified or has already failed.',
+      });
+    }
+
+    // Verify presence and size on S3 via HeadObject (outside DB transaction)
     let verification;
     try {
-      verification = await s3Service.verifyUploadedObject(doc.s3ObjectKey, doc.fileSize);
+      verification = await s3Service.verifyUploadedObject(claimed.s3ObjectKey, claimed.fileSize);
     } catch (err) {
-      // S3 verification failed — rollback reserved quota
-      await User.findByIdAndUpdate(userId, { $inc: { reservedBytes: -doc.fileSize } });
-      doc.status = 'FAILED';
-      await doc.save();
+      // Verification failed — release both personal and global reservations
+      await runWithOptionalTransaction(async (session) => {
+        const opts = session ? { session } : {};
+        const failedDoc = await Document.findOneAndUpdate(
+          { _id: claimed._id, status: 'VERIFYING' },
+          { $set: { status: 'FAILED', expiresAt: null, verifyingAt: null } },
+          { returnDocument: 'after', ...opts }
+        );
+        if (failedDoc) {
+          await User.updateOne({ _id: userId }, safeSubtract('reservedBytes', claimed.fileSize), pipelineOpts(session));
+          await SystemStorage.updateOne({ _id: 'global' }, safeSubtract('reservedBytes', claimed.fileSize), pipelineOpts(session));
+        }
+      });
+
       return res.status(400).json({
         success: false,
         error: `Cloud verification failed: ${err.message}`,
       });
     }
 
-    const actualSize = verification.actualSizeBytes || doc.fileSize;
+    const reservedSize = claimed.fileSize;
+    const actualSize = verification.actualSizeBytes ?? reservedSize;
 
-    // Atomically transfer quota from reserved to used
-    await User.findByIdAndUpdate(userId, {
-      $inc: {
-        reservedBytes: -doc.fileSize,
-        storageUsedBytes: actualSize,
-      },
+    // Prevent quota bypass via mismatched S3 PUT size
+    if (actualSize > MAX_SINGLE_FILE_BYTES || actualSize > reservedSize) {
+      let s3Cleaned = false;
+      try {
+        await s3Service.deleteS3Object(claimed.s3ObjectKey);
+        s3Cleaned = true;
+      } catch {
+        // Will be retried by cleanup sweep if marked CLEANUP_PENDING
+      }
+
+      await runWithOptionalTransaction(async (session) => {
+        const opts = session ? { session } : {};
+        await Document.findOneAndUpdate(
+          { _id: claimed._id, status: 'VERIFYING' },
+          {
+            $set: {
+              status: s3Cleaned ? 'FAILED' : 'CLEANUP_PENDING',
+              expiresAt: null,
+              verifyingAt: null,
+            },
+          },
+          opts
+        );
+        if (s3Cleaned) {
+          await User.updateOne({ _id: userId }, safeSubtract('reservedBytes', reservedSize), pipelineOpts(session));
+          await SystemStorage.updateOne({ _id: 'global' }, safeSubtract('reservedBytes', reservedSize), pipelineOpts(session));
+        }
+      });
+
+      return res.status(400).json({
+        success: false,
+        error: `Uploaded file size (${actualSize} bytes) exceeds reserved quota (${reservedSize} bytes).`,
+        code: 'SIZE_MISMATCH',
+      });
+    }
+
+    const finalizedDoc = await runWithOptionalTransaction(async (session) => {
+      const opts = session ? { session } : {};
+      await SystemStorage.getOrInitGlobal(session);
+
+      const updateFields = {
+        displayName: displayName || claimed.displayName,
+        fileSize: actualSize,
+        status: 'COMPLETED',
+        s3Status: 'synced',
+        kmsEncrypted: true,
+        sha256Checksum: sha256Checksum || '',
+        expiresAt: null,
+        verifyingAt: null,
+      };
+      if (category) updateFields.category = category;
+      if (tags && Array.isArray(tags)) updateFields.tags = tags;
+
+      const updated = await Document.findOneAndUpdate(
+        { _id: claimed._id, status: 'VERIFYING' },
+        { $set: updateFields },
+        { returnDocument: 'after', ...opts }
+      );
+
+      if (!updated) return null;
+
+      await User.updateOne(
+        { _id: userId },
+        [
+          {
+            $set: {
+              reservedBytes: { $max: [0, { $subtract: ['$reservedBytes', reservedSize] }] },
+              storageUsedBytes: { $add: ['$storageUsedBytes', actualSize] },
+            },
+          },
+        ],
+        pipelineOpts(session)
+      );
+
+      await SystemStorage.updateOne(
+        { _id: 'global' },
+        [
+          {
+            $set: {
+              reservedBytes: { $max: [0, { $subtract: ['$reservedBytes', reservedSize] }] },
+              storageUsedBytes: { $add: ['$storageUsedBytes', actualSize] },
+            },
+          },
+        ],
+        pipelineOpts(session)
+      );
+
+      await Activity.create(
+        [
+          {
+            userId,
+            action: 'UPLOAD',
+            documentId: updated._id,
+            documentName: updated.displayName,
+            details: `Uploaded ${updated.displayName} (${(actualSize / (1024 * 1024)).toFixed(1)} MB) to ${updated.category}`,
+            ipAddress: req.ip || '',
+          },
+        ],
+        opts
+      );
+
+      return updated;
     });
 
-    // Commit document metadata
-    doc.displayName = displayName || doc.displayName;
-    if (category) doc.category = category;
-    doc.fileSize = actualSize;
-    doc.status = 'COMPLETED';
-    doc.s3Status = 'synced';
-    doc.kmsEncrypted = true;
-    doc.sha256Checksum = sha256Checksum || '';
-    if (tags && Array.isArray(tags)) doc.tags = tags;
-    doc.expiresAt = null;
-    await doc.save();
-
-    // Log Activity
-    await Activity.create({
-      userId,
-      action: 'UPLOAD',
-      documentId: doc._id,
-      documentName: doc.displayName,
-      details: `Uploaded ${doc.displayName} (${(actualSize / (1024 * 1024)).toFixed(1)} MB) to ${doc.category}`,
-      ipAddress: req.ip || '',
-    });
+    if (!finalizedDoc) {
+      return res.status(409).json({
+        success: false,
+        error: 'Upload finalization conflicted with another request.',
+      });
+    }
 
     res.status(201).json({
       success: true,
-      data: doc,
+      data: finalizedDoc,
       message: 'Document uploaded and verified in cloud storage successfully.',
     });
   } catch (error) {
@@ -178,17 +366,25 @@ exports.finalizeUpload = async (req, res) => {
   }
 };
 
-// POST /api/documents/abort-upload (Rollback quota reservation on cancelled/failed upload)
+// POST /api/documents/abort-upload (Idempotent rollback of personal & global reservations)
 exports.abortUpload = async (req, res) => {
   try {
     const { documentId } = req.body;
-    const doc = await Document.findOne({ _id: documentId, userId: req.user._id });
+    const userId = req.user._id;
 
-    if (doc && doc.status === 'RESERVED') {
-      await User.findByIdAndUpdate(req.user._id, { $inc: { reservedBytes: -doc.fileSize } });
-      doc.status = 'FAILED';
-      await doc.save();
-    }
+    await runWithOptionalTransaction(async (session) => {
+      const opts = session ? { session } : {};
+      const abortedDoc = await Document.findOneAndUpdate(
+        { _id: documentId, userId, status: 'RESERVED' },
+        { $set: { status: 'FAILED', expiresAt: null } },
+        { returnDocument: 'after', ...opts }
+      );
+
+      if (abortedDoc) {
+        await User.updateOne({ _id: userId }, safeSubtract('reservedBytes', abortedDoc.fileSize), pipelineOpts(session));
+        await SystemStorage.updateOne({ _id: 'global' }, safeSubtract('reservedBytes', abortedDoc.fileSize), pipelineOpts(session));
+      }
+    });
 
     res.json({ success: true, message: 'Upload aborted and reserved quota released.' });
   } catch (error) {
@@ -368,31 +564,44 @@ exports.updateDocument = async (req, res) => {
   }
 };
 
-// DELETE /api/documents/:id (Soft delete: move to trash)
+// DELETE /api/documents/:id (Soft delete: frees personal quota; global S3 usage remains until purge)
 exports.deleteDocument = async (req, res) => {
   try {
-    const doc = await Document.findOne({ _id: req.params.id, userId: req.user._id });
+    const userId = req.user._id;
+    const existing = await Document.findOne({ _id: req.params.id, userId });
 
-    if (!doc) {
+    if (!existing) {
       return res.status(404).json({ success: false, error: 'Document not found.' });
     }
 
-    // Decrement active user storage quota
-    await User.findByIdAndUpdate(req.user._id, {
-      $inc: { storageUsedBytes: -doc.fileSize },
-    });
+    if (existing.isTrash) {
+      return res.json({ success: true, message: 'Document is already in trash.' });
+    }
 
-    doc.isTrash = true;
-    doc.deletedAt = new Date();
-    await doc.save();
+    await runWithOptionalTransaction(async (session) => {
+      const opts = session ? { session } : {};
+      const trashed = await Document.findOneAndUpdate(
+        { _id: req.params.id, userId, isTrash: false, status: 'COMPLETED' },
+        { $set: { isTrash: true, deletedAt: new Date() } },
+        { returnDocument: 'after', ...opts }
+      );
 
-    await Activity.create({
-      userId: req.user._id,
-      action: 'DELETE',
-      documentId: doc._id,
-      documentName: doc.displayName,
-      details: `Moved ${doc.displayName} to Trash`,
-      ipAddress: req.ip || '',
+      if (trashed) {
+        await User.updateOne({ _id: userId }, safeSubtract('storageUsedBytes', trashed.fileSize), pipelineOpts(session));
+        await Activity.create(
+          [
+            {
+              userId,
+              action: 'DELETE',
+              documentId: trashed._id,
+              documentName: trashed.displayName,
+              details: `Moved ${trashed.displayName} to Trash`,
+              ipAddress: req.ip || '',
+            },
+          ],
+          opts
+        );
+      }
     });
 
     res.json({ success: true, message: 'Document moved to trash successfully.' });
@@ -401,26 +610,50 @@ exports.deleteDocument = async (req, res) => {
   }
 };
 
-// DELETE /api/documents/:id/purge (Permanent purge from S3 and MongoDB)
+// DELETE /api/documents/:id/purge (Permanent purge from S3 and MongoDB — reclaims global S3 capacity)
 exports.purgeDocument = async (req, res) => {
   try {
-    const doc = await Document.findOne({ _id: req.params.id, userId: req.user._id });
+    const userId = req.user._id;
+    const existing = await Document.findOne({ _id: req.params.id, userId });
 
-    if (!doc) {
+    if (!existing) {
       return res.status(404).json({ success: false, error: 'Document not found.' });
     }
 
-    // Delete physical file from Amazon S3
-    await s3Service.deleteS3Object(doc.s3ObjectKey);
+    const wasCompleted = existing.status === 'COMPLETED';
+    const wasReserved = existing.status === 'RESERVED' || existing.status === 'VERIFYING';
 
-    // If it wasn't already in trash, decrement user storage quota
-    if (!doc.isTrash) {
-      await User.findByIdAndUpdate(req.user._id, {
-        $inc: { storageUsedBytes: -doc.fileSize },
-      });
+    // Atomically mark PURGING before S3 deletion so partial failures are recoverable
+    const purgingDoc = await Document.findOneAndUpdate(
+      { _id: existing._id, userId, status: { $ne: 'PURGING' } },
+      { $set: { status: 'PURGING', wasTrashBeforePurge: existing.isTrash } },
+      { returnDocument: 'after' }
+    );
+
+    if (!purgingDoc && existing.status !== 'PURGING') {
+      return res.status(409).json({ success: false, error: 'Document purge is already in progress.' });
     }
 
-    await Document.deleteOne({ _id: doc._id });
+    const targetDoc = purgingDoc || existing;
+
+    // Delete physical file from Amazon S3 first; only reclaim global capacity if S3 delete succeeds
+    await s3Service.deleteS3Object(targetDoc.s3ObjectKey);
+
+    await runWithOptionalTransaction(async (session) => {
+      const opts = session ? { session } : {};
+      const deletedDoc = await Document.findOneAndDelete({ _id: targetDoc._id, userId }, opts);
+      if (!deletedDoc) return;
+
+      if (wasCompleted || deletedDoc.status === 'PURGING') {
+        if (!deletedDoc.wasTrashBeforePurge) {
+          await User.updateOne({ _id: userId }, safeSubtract('storageUsedBytes', deletedDoc.fileSize), pipelineOpts(session));
+        }
+        await SystemStorage.updateOne({ _id: 'global' }, safeSubtract('storageUsedBytes', deletedDoc.fileSize), pipelineOpts(session));
+      } else if (wasReserved) {
+        await User.updateOne({ _id: userId }, safeSubtract('reservedBytes', deletedDoc.fileSize), pipelineOpts(session));
+        await SystemStorage.updateOne({ _id: 'global' }, safeSubtract('reservedBytes', deletedDoc.fileSize), pipelineOpts(session));
+      }
+    });
 
     res.json({ success: true, message: 'Document permanently deleted from cloud storage.' });
   } catch (error) {
@@ -428,34 +661,46 @@ exports.purgeDocument = async (req, res) => {
   }
 };
 
-// POST /api/documents/batch-delete (Batch soft deletion)
+// POST /api/documents/batch-delete (Batch soft deletion — frees personal quota; global S3 remains until purge)
 exports.batchDelete = async (req, res) => {
   try {
     const { documentIds } = req.body;
+    const userId = req.user._id;
+
     if (!Array.isArray(documentIds) || documentIds.length === 0) {
       return res.status(400).json({ success: false, error: 'Document IDs array is required.' });
     }
 
-    const docs = await Document.find({
-      _id: { $in: documentIds },
-      userId: req.user._id,
-      isTrash: false,
+    let freedBytes = 0;
+    let count = 0;
+
+    await runWithOptionalTransaction(async (session) => {
+      const docs = await Document.find({
+        _id: { $in: documentIds },
+        userId,
+        isTrash: false,
+        status: 'COMPLETED',
+      }).session(session || null);
+
+      if (docs.length === 0) return;
+
+      const matchedIds = docs.map((d) => d._id);
+      freedBytes = docs.reduce((acc, d) => acc + d.fileSize, 0);
+      count = docs.length;
+
+      const opts = session ? { session } : {};
+      await Document.updateMany(
+        { _id: { $in: matchedIds }, userId, isTrash: false },
+        { $set: { isTrash: true, deletedAt: new Date() } },
+        opts
+      );
+      await User.updateOne({ _id: userId }, safeSubtract('storageUsedBytes', freedBytes), pipelineOpts(session));
     });
-
-    const totalBytesToFree = docs.reduce((acc, d) => acc + d.fileSize, 0);
-
-    await Promise.all([
-      User.findByIdAndUpdate(req.user._id, { $inc: { storageUsedBytes: -totalBytesToFree } }),
-      Document.updateMany(
-        { _id: { $in: documentIds }, userId: req.user._id },
-        { $set: { isTrash: true, deletedAt: new Date() } }
-      ),
-    ]);
 
     res.json({
       success: true,
-      message: `${docs.length} documents moved to trash.`,
-      freedBytes: totalBytesToFree,
+      message: `${count} documents moved to trash.`,
+      freedBytes,
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });

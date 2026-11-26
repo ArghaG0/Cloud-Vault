@@ -62,9 +62,26 @@ const documentSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['RESERVED', 'UPLOADED', 'VERIFIED', 'COMPLETED', 'FAILED'],
+      enum: [
+        'RESERVED',
+        'VERIFYING',
+        'UPLOADED',
+        'VERIFIED',
+        'COMPLETED',
+        'FAILED',
+        'PURGING',
+        'CLEANUP_PENDING',
+      ],
       default: 'RESERVED',
       index: true,
+    },
+    verifyingAt: {
+      type: Date,
+      default: null,
+    },
+    wasTrashBeforePurge: {
+      type: Boolean,
+      default: false,
     },
     kmsEncrypted: {
       type: Boolean,
