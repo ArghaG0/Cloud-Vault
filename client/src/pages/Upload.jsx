@@ -84,7 +84,7 @@ export function Upload() {
         rawFile: file,
         file: { name: file.name, size: file.size },
         category: 'Lecture Notes',
-        tag: 'ACADEMIC',
+        tag: '',
         progress: 0,
         status: 'pending',
       });
@@ -112,7 +112,10 @@ export function Upload() {
     try {
       await documentService.uploadFile(
         target.rawFile,
-        { category: target.category, tag: target.tag },
+        {
+          category: target.category,
+          tag: target.category === 'Other Documents' ? target.tag.trim() : '',
+        },
         (progress) => {
           setQueue((prev) =>
             prev.map((item) => (item.id === id ? { ...item, progress } : item))
@@ -336,7 +339,11 @@ export function Upload() {
                       onChange={(e) => {
                         const val = e.target.value;
                         setQueue((prev) =>
-                          prev.map((i) => (i.id === item.id ? { ...i, category: val } : i))
+                          prev.map((i) =>
+                            i.id === item.id
+                              ? { ...i, category: val, tag: val === 'Other Documents' ? i.tag : '' }
+                              : i
+                          )
                         );
                       }}
                       className="px-2.5 py-1 rounded-DEFAULT bg-surface-container-low border border-border-subtle text-xs text-on-surface focus:outline-none"
@@ -349,18 +356,20 @@ export function Upload() {
                       <option value="Other Documents">Other Documents</option>
                     </select>
 
-                    <input
-                      type="text"
-                      value={item.tag}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setQueue((prev) =>
-                          prev.map((i) => (i.id === item.id ? { ...i, tag: val } : i))
-                        );
-                      }}
-                      placeholder="Course tag (e.g. SEM6)"
-                      className="w-24 px-2 py-1 rounded-DEFAULT bg-surface-container-low border border-border-subtle text-xs font-mono text-on-surface uppercase focus:outline-none"
-                    />
+                    {item.category === 'Other Documents' && (
+                      <input
+                        type="text"
+                        value={item.tag}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setQueue((prev) =>
+                            prev.map((i) => (i.id === item.id ? { ...i, tag: val } : i))
+                          );
+                        }}
+                        placeholder="Specify tag or type"
+                        className="w-36 px-2.5 py-1 rounded-DEFAULT bg-surface-container-low border border-border-subtle text-xs text-on-surface focus:outline-none"
+                      />
+                    )}
                   </div>
 
                   {/* Progress & Actions */}

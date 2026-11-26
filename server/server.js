@@ -14,7 +14,7 @@ const categoryRoutes = require('./src/routes/categoryRoutes');
 const activityRoutes = require('./src/routes/activityRoutes');
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5001;
 
 // Connect to Database
 connectDB();

@@ -22,8 +22,10 @@ export function AppHeader() {
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
 
-  const searchInputRef = useRef(null);
-  const searchContainerRef = useRef(null);
+  const desktopInputRef = useRef(null);
+  const desktopSearchRef = useRef(null);
+  const mobileInputRef = useRef(null);
+  const mobileSearchRef = useRef(null);
 
   const navLinks = [
     { label: 'Dashboard', to: '/dashboard' },
@@ -37,11 +39,15 @@ export function AppHeader() {
   const displayName = user?.fullName || user?.name || 'Student';
   const initials = getUserInitials(user);
 
-  // Auto-focus input when search opens
+  // Auto-focus the visible input when search opens
   useEffect(() => {
     if (!isSearchOpen) return;
     const timer = setTimeout(() => {
-      searchInputRef.current?.focus();
+      if (window.innerWidth >= 1024) {
+        desktopInputRef.current?.focus();
+      } else {
+        mobileInputRef.current?.focus();
+      }
     }, 40);
     return () => clearTimeout(timer);
   }, [isSearchOpen]);
@@ -60,10 +66,12 @@ export function AppHeader() {
     };
 
     const handleClickOutside = (e) => {
+      const clickedInsideDesktop = desktopSearchRef.current?.contains(e.target);
+      const clickedInsideMobile = mobileSearchRef.current?.contains(e.target);
       if (
         isSearchOpen &&
-        searchContainerRef.current &&
-        !searchContainerRef.current.contains(e.target) &&
+        !clickedInsideDesktop &&
+        !clickedInsideMobile &&
         !searchQuery.trim()
       ) {
         setIsSearchOpen(false);
@@ -167,7 +175,7 @@ export function AppHeader() {
               </nav>
             ) : (
               <form
-                ref={searchContainerRef}
+                ref={desktopSearchRef}
                 onSubmit={handleSearchSubmit}
                 className="relative flex items-center w-72 xl:w-96 shrink-0"
               >
@@ -175,7 +183,7 @@ export function AppHeader() {
                   search
                 </span>
                 <input
-                  ref={searchInputRef}
+                  ref={desktopInputRef}
                   type="text"
                   placeholder="Search vault (Esc to close)..."
                   value={searchQuery}
@@ -215,7 +223,7 @@ export function AppHeader() {
                   </button>
                 ) : (
                   <form
-                    ref={searchContainerRef}
+                    ref={mobileSearchRef}
                     onSubmit={handleSearchSubmit}
                     className="relative flex items-center w-36 sm:w-52 md:w-60 shrink-0"
                   >
@@ -223,7 +231,7 @@ export function AppHeader() {
                       search
                     </span>
                     <input
-                      ref={searchInputRef}
+                      ref={mobileInputRef}
                       type="text"
                       placeholder="Search..."
                       value={searchQuery}

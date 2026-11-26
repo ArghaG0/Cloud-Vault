@@ -20,7 +20,7 @@ const CATEGORY_COLORS = [
 
 export function Dashboard() {
   const { user } = useAuth();
-  console.log(user)
+  
   const { success, info } = useToast();
 
   const [documents, setDocuments] = useState([]);
@@ -94,7 +94,7 @@ export function Dashboard() {
       </div>
     );
   }
-  console.log(stats)
+  
 
   return (
     <div className="flex flex-col gap-8 animate-fade-in">

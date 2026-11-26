@@ -25,7 +25,7 @@ export function Storage() {
           storageService.getBackupRules(),
         ]);
         setStats(st);
-        setLogs(lg);
+        setLogs(Array.isArray(lg) ? lg : []);
         setRules(rl);
       } catch {
         toastError('Failed to load storage telemetry');
@@ -72,7 +72,7 @@ export function Storage() {
     info('Executing full S3 bucket synchronization...');
     try {
       const updatedLogs = await storageService.syncAllPending();
-      setLogs(updatedLogs);
+      setLogs(Array.isArray(updatedLogs) ? updatedLogs : []);
       success('All pending manifests and objects synchronized with Amazon S3.');
     } catch {
       toastError('Sync failed');

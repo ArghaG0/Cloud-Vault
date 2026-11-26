@@ -4,11 +4,9 @@
 // or proxied via Vite's server.proxy config).
 const DEFAULT_API_URL = 'http://localhost:5001/api';
 
+const ENV_API_URL = import.meta.env.VITE_API_URL;
 const RAW_API_URL =
-  import.meta.env.VITE_API_URL ||
-  (typeof process !== 'undefined' &&
-    (process.env.EXPO_PUBLIC_API_URL || process.env.NEXT_PUBLIC_API_URL)) ||
-  DEFAULT_API_URL;
+  ENV_API_URL !== undefined ? String(ENV_API_URL) : DEFAULT_API_URL;
 
 // When RAW_API_URL is empty string (Docker same-origin mode), use relative /api
 const CLEAN_BASE = RAW_API_URL.trim() === '' ? '/api' : RAW_API_URL.replace(/\/+$/, '');
