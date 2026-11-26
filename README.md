@@ -31,7 +31,7 @@ University students frequently manage academic coursework, lecture slide decks, 
 **CloudVault** solves this by providing:
 - **Centralized Cloud Ingestion:** Fast, direct-to-cloud file uploads to private Amazon S3 buckets.
 - **Accidental Deletion Recovery:** Multi-version retention using **Amazon S3 Object Versioning**.
-- **Atomic Quota Accounting:** Enforcing a strict 10 GB quota per student to prevent storage abuse.
+- **Atomic Quota Accounting:** Enforcing a **200 MB per-account** quota and a **5 GB global storage cap** across all accounts to stay within AWS S3 Free Tier limits.
 - **Categorization & Global Search:** Instant faceted search across course codes, tags, and document categories.
 - **Security & Privacy:** Industry-standard **HttpOnly cookie authentication**, bcrypt password hashing, and zero-exposure presigned S3 URLs.
 
@@ -45,11 +45,12 @@ Rather than routing 50 MB files through the Node.js server (which causes memory 
 2. **Direct Upload:** The client uploads the binary directly to Amazon S3 via `PUT`. S3 returns `200 OK`.
 3. **Independent Verification:** The client calls `POST /api/documents/finalize`. The backend contacts AWS S3 via `HeadObjectCommand` to independently verify physical file existence, exact byte size, and Content-Type before committing the record to MongoDB.
 
-### 2. Atomic Quota Reservation Pattern (ADR-05)
-To prevent race conditions where concurrent parallel uploads exceed a student's 10 GB limit:
-- When an upload URL is requested, MongoDB atomically reserves `reservedBytes`.
-- If two 20 MB uploads are fired with only 30 MB remaining, exactly one succeeds and the second is rejected atomically (`403 Forbidden`).
-- If an upload is cancelled, `POST /api/documents/abort-upload` refunds the reservation immediately.
+### 2. Atomic Dual-Quota Reservation Pattern (ADR-05)
+To prevent race conditions where concurrent parallel uploads exceed either a student's **200 MB** personal limit or the **5 GB** global bucket cap (with **50 MB** max per individual file):
+- When an upload URL is requested, MongoDB atomically reserves `reservedBytes` on both the global `SystemStorage` counter (`5 GB` cap) and the user's `User` record (`200 MB` cap), using MongoDB multi-document transactions when supported (e.g., Atlas) and compensating atomic updates on standalone MongoDB.
+- Concurrent uploads racing past either limit are rejected atomically (`403 GLOBAL_STORAGE_FULL` or `403 QUOTA_EXCEEDED`).
+- `PutObjectCommand` signs `ContentLength`, and `POST /api/documents/finalize` verifies actual S3 size (`SIZE_MISMATCH` guard) before converting `reservedBytes` into `storageUsedBytes`.
+- If an upload is cancelled (`POST /api/documents/abort-upload`), fails verification, or expires, both personal and global reservations are released automatically.
 
 ### 3. Cloud Backup & Historical Recovery (ADR-04)
 - Uploaded files are backed by **Amazon S3 Object Versioning**.
@@ -57,8 +58,8 @@ To prevent race conditions where concurrent parallel uploads exceed a student's 
 - Historical versions can be listed and restored with a single click.
 
 ### 4. Two-Tier Deletion (Soft Delete / Trash)
-- **Soft Delete:** Deleting a document moves it to Trash (`isTrash: true`), refunds active user quota immediately, but keeps the physical file safely in S3 for 30 days.
-- **Permanent Purge:** Emptying Trash issues S3 `DeleteObjectCommand` to permanently destroy the S3 object and deletes the MongoDB document.
+- **Soft Delete:** Deleting a document moves it to Trash (`isTrash: true`) and refunds the student's **personal 200 MB quota** immediately, while **continuing to count toward the 5 GB global limit** since the physical object remains in S3.
+- **Permanent Purge:** `DELETE /api/documents/:id/purge` deletes the S3 object via `DeleteObjectCommand` and reclaims **5 GB global S3 capacity** alongside removing the MongoDB record.
 
 ### 5. Secure Authentication & Session Isolation
 - Passwords hashed with **bcryptjs** (work factor 12, ~4,096 iterations).
@@ -118,6 +119,7 @@ To prevent race conditions where concurrent parallel uploads exceed a student's 
 ```
 d:\Projects\CCS3/
 ├── README.md                           # Master Project Documentation (This File)
+├── docker-compose.yml                  # Multi-container orchestration (client + server)
 ├── .gitignore                          # Root Git ignore rules (node_modules, .env, dist)
 ├── doc/
 │   └── Cloud_Based_Student_Document_Management_SRS.md  # Software Requirements Specification
@@ -133,22 +135,28 @@ d:\Projects\CCS3/
 │   ├── CloudVault.postman_collection.json   # Postman Collection v2.1 (All Endpoints)
 │   └── CloudVault.postman_environment.json  # Pre-configured Local Environment
 ├── client/                             # React 19 Frontend Application
+│   ├── Dockerfile                      # Multi-stage Vite build -> nginx:1.27-alpine
+│   ├── nginx.conf                      # SPA fallback & /api/* proxy to server:5001
 │   ├── src/
+│   │   ├── api/                        # HTTP client & domain API modules (auth, documents, dashboard, etc.)
 │   │   ├── components/                 # Primitives (Button, Modal, Dropdown, Table)
 │   │   ├── context/                    # AuthContext, ThemeContext, ToastContext
 │   │   ├── pages/                      # Dashboard, MyDocuments, Upload, Storage, etc.
-│   │   └── services/                   # Service abstractions (apiClient, documentService)
+│   │   └── services/                   # Service adapters (documentService, storageService, activityService)
 │   ├── package.json
 │   └── tailwind.config.js
 └── server/                             # Node.js + Express 5 Backend Application
+    ├── Dockerfile                      # Non-root node:22-alpine Express container
     ├── .env                            # Environment secrets (Protected by Git)
-    ├── server.js                       # Express application entry point
+    ├── .env.example                    # Environment template (Tracked by Git)
+    ├── server.js                       # Express entry point + startup reconciliation
     ├── package.json
     └── src/
         ├── config/                     # db.js (MongoDB) & s3.js (AWS SDK v3)
-        ├── models/                     # User, Document, Category, Activity, Session
-        ├── middleware/                 # auth.js (HttpOnly cookie JWT), errorHandler
-        ├── services/                   # s3Service.js (Presigned URLs, HeadObject, Delete)
+        ├── models/                     # User, Document, SystemStorage, SystemLock, Category, Activity, Session
+        ├── middleware/                 # auth.js (HttpOnly cookie JWT), checkDb.js
+        ├── services/                   # s3Service.js & storageReconciliationService.js
+        ├── utils/                      # dbTransaction.js (ACID transaction + standalone fallback)
         ├── controllers/                # authController, documentController, dashboardController
         └── routes/                     # authRoutes, documentRoutes, dashboardRoutes, etc.
 ```
@@ -158,13 +166,29 @@ d:\Projects\CCS3/
 ## Getting Started & Local Setup
 
 ### Prerequisites
-1. **Node.js:** v20.x or higher installed (`node -v`).
+1. **Node.js:** v20.x or higher installed (`node -v`), or **Docker Desktop** for containerized setup.
 2. **MongoDB Database:** A MongoDB Atlas URI or local MongoDB instance (`mongodb://localhost:27017/cloudvault`).
-3. **AWS S3 Bucket:** An Amazon S3 bucket with an IAM user having `PutObject`, `GetObject`, `DeleteObject`, and `HeadObject` permissions.
+3. **AWS S3 Bucket:** An Amazon S3 bucket with an IAM user having `PutObject`, `GetObject`, `DeleteObject`, `HeadObject`, and `GetBucketVersioning` permissions.
 
 ---
 
-### Step 1: Server Configuration & Startup
+### Option A: Docker Setup (Recommended)
+
+1. Copy `server/.env.example` to `server/.env` and fill in your MongoDB URI, JWT secret, and AWS S3 credentials.
+2. Build and start both containers from the repository root:
+   ```bash
+   docker compose up --build -d
+   ```
+   *(On subsequent restarts without code changes, `docker compose up -d` is sufficient.)*
+3. Access the application:
+   - **Frontend (nginx):** `http://localhost:3000` (proxies `/api/*` to `server:5001`)
+   - **Backend Health Check:** `http://localhost:5001/api/health`
+
+---
+
+### Option B: Local Development (Without Docker)
+
+#### Step 1: Server Configuration & Startup
 
 1. Open a terminal and navigate to `server/`:
    ```bash
@@ -172,10 +196,10 @@ d:\Projects\CCS3/
    npm install
    ```
 
-2. Verify or update `server/.env`:
+2. Copy `server/.env.example` to `server/.env` and update your values:
    ```ini
    # Server Port & Environment
-   PORT=5000
+   PORT=5001
    NODE_ENV=development
    CLIENT_URL=http://localhost:5173
 
@@ -217,12 +241,10 @@ d:\Projects\CCS3/
    ```
    [AWS S3] Initialized S3 Client for region: ap-southeast-2
    [Database] MongoDB Connected: MongoDB Atlas
-   CloudVault Server running on http://localhost:5000
+   CloudVault Server running on http://localhost:5001
    ```
 
----
-
-### Step 2: Client Configuration & Startup
+#### Step 2: Client Configuration & Startup
 
 1. Open a second terminal and navigate to `client/`:
    ```bash
@@ -277,12 +299,12 @@ All document routes require authentication and enforce strict student isolation:
 | **Documents** | `GET` | `/api/documents/:id/download-url` | Presigned S3 GET URL (attachment download) |
 | **Documents** | `GET` | `/api/documents/:id/preview-url` | Presigned S3 GET URL (inline browser preview) |
 | **Documents** | `PATCH` | `/api/documents/:id` | Renames display name or updates category/tags |
-| **Documents** | `DELETE`| `/api/documents/:id` | Soft delete to Trash (quota refunded) |
-| **Documents** | `DELETE`| `/api/documents/:id/purge` | Permanently destroys S3 file and MongoDB record |
+| **Documents** | `DELETE`| `/api/documents/:id` | Soft delete to Trash (frees personal 200 MB quota; keeps global S3 count) |
+| **Documents** | `DELETE`| `/api/documents/:id/purge` | Permanently destroys S3 file, deletes MongoDB record, and reclaims global 5 GB capacity |
 | **Batch** | `POST` | `/api/documents/batch-delete` | Batch soft delete multiple items |
 | **Batch** | `POST` | `/api/documents/batch-move` | Batch category reassignment |
-| **Telemetry** | `GET` | `/api/dashboard/stats` | Aggregated dashboard stats & S3 health |
-| **Telemetry** | `GET` | `/api/storage/telemetry` | AWS S3 bucket status, versioning, encryption |
+| **Telemetry** | `GET` | `/api/dashboard/stats` | Aggregated dashboard stats, personal (200 MB) & global (5 GB) quota telemetry, S3 health |
+| **Telemetry** | `GET` | `/api/storage/telemetry` | AWS S3 bucket status, versioning, encryption, personal & global storage flags |
 | **Telemetry** | `GET` | `/api/storage/logs` | Paginated verified S3 object keys and checksums |
 | **Categories**| `GET` | `/api/categories` | Categories with live document counts and MB |
 | **Audit** | `GET` | `/api/activities` | Chronological student audit log stream |
