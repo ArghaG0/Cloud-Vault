@@ -74,25 +74,42 @@ async function cleanupExpiredReservations() {
     cleanedCount += 1;
   }
 
-  // Retry any stuck PURGING documents (e.g., S3 deleted, DB failed)
-  const purgingDocs = await Document.find({ status: 'PURGING' }).select(
-    '_id userId fileSize s3ObjectKey wasTrashBeforePurge'
-  );
+  // Retry any stale PURGING documents (e.g., S3 deleted, DB failed or server crashed mid-purge)
+  const purgingDocs = await Document.find({
+    status: 'PURGING',
+    $or: [{ purgingAt: null }, { purgingAt: { $lt: cutoff } }],
+  }).select('_id userId fileSize s3ObjectKey purgingAt');
 
   for (const pDoc of purgingDocs) {
+    const claimedPurge = await Document.findOneAndUpdate(
+      {
+        _id: pDoc._id,
+        status: 'PURGING',
+        $or: [{ purgingAt: null }, { purgingAt: { $lt: cutoff } }],
+      },
+      { $set: { purgingAt: new Date() } },
+      { returnDocument: 'after' }
+    );
+    if (!claimedPurge) continue;
+
     try {
-      await s3Service.deleteS3Object(pDoc.s3ObjectKey);
+      await s3Service.deleteS3Object(claimedPurge.s3ObjectKey);
     } catch {
+      await Document.updateOne(
+        { _id: claimedPurge._id, status: 'PURGING', purgingAt: claimedPurge.purgingAt },
+        { $set: { purgingAt: null } }
+      ).catch(() => {});
       continue; // Retry on next sweep
     }
 
     await runWithOptionalTransaction(async (session) => {
       const opts = session ? { session } : {};
-      const deleted = await Document.findOneAndDelete({ _id: pDoc._id, status: 'PURGING' }, opts);
+      const deleted = await Document.findOneAndDelete(
+        { _id: claimedPurge._id, status: 'PURGING', purgingAt: claimedPurge.purgingAt },
+        opts
+      );
       if (!deleted) return;
-      if (!deleted.wasTrashBeforePurge) {
-        await User.updateOne({ _id: deleted.userId }, safeSubtract('storageUsedBytes', deleted.fileSize), pipelineOpts(session));
-      }
+      await User.updateOne({ _id: deleted.userId }, safeSubtract('storageUsedBytes', deleted.fileSize), pipelineOpts(session));
       await SystemStorage.updateOne({ _id: 'global' }, safeSubtract('storageUsedBytes', deleted.fileSize), pipelineOpts(session));
     });
 
@@ -105,7 +122,7 @@ async function cleanupExpiredReservations() {
 /**
  * Acquires a distributed lock and reconciles User and SystemStorage counters
  * from actual Document records.
- * - Personal storageUsedBytes: COMPLETED and isTrash: false
+ * - Personal storageUsedBytes: all COMPLETED + PURGING (including trashed docs until permanently purged)
  * - Global storageUsedBytes: all COMPLETED + PURGING (still occupying S3 until purge finishes)
  * - Reserved bytes: RESERVED, VERIFYING, or CLEANUP_PENDING
  */
@@ -120,7 +137,7 @@ async function reconcileAllStorage() {
 
     const [personalUsedAgg, reservedAgg, globalUsedAgg] = await Promise.all([
       Document.aggregate([
-        { $match: { status: 'COMPLETED', isTrash: false } },
+        { $match: { status: { $in: ['COMPLETED', 'PURGING'] } } },
         { $group: { _id: '$userId', totalBytes: { $sum: '$fileSize' } } },
       ]),
       Document.aggregate([

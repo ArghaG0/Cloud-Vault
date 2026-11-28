@@ -564,7 +564,114 @@ exports.updateDocument = async (req, res) => {
   }
 };
 
-// DELETE /api/documents/:id (Soft delete: frees personal quota; global S3 usage remains until purge)
+// Shared atomic purge helper: claims COMPLETED (or stale PURGING) -> deletes all S3 versions ->
+// atomically deletes DB doc and reclaims both personal 200 MB and global 5 GB storage exactly once.
+async function executeSinglePurge(docId, userId, ipAddress = '') {
+  const existing = await Document.findOne({ _id: docId, userId });
+  if (!existing) {
+    return { ok: false, status: 404, error: 'Document not found.' };
+  }
+
+  if (existing.status !== 'COMPLETED' && existing.status !== 'PURGING') {
+    return {
+      ok: false,
+      status: 400,
+      error: 'Only completed or trashed documents can be permanently deleted.',
+    };
+  }
+
+  const staleThreshold = new Date(Date.now() - 60 * 1000);
+  const claimed = await Document.findOneAndUpdate(
+    {
+      _id: existing._id,
+      userId,
+      $or: [
+        { status: 'COMPLETED' },
+        { status: 'PURGING', $or: [{ purgingAt: null }, { purgingAt: { $lt: staleThreshold } }] },
+      ],
+    },
+    { $set: { status: 'PURGING', purgingAt: new Date() } },
+    { returnDocument: 'after' }
+  );
+
+  if (!claimed) {
+    return {
+      ok: false,
+      status: 409,
+      error: 'Permanent deletion is already in progress for this document.',
+    };
+  }
+
+  const leaseAt = claimed.purgingAt;
+
+  // Delete all versions and delete markers from S3; on failure, release lease so user/recovery can retry
+  try {
+    await s3Service.deleteS3Object(claimed.s3ObjectKey);
+  } catch (s3Err) {
+    await Document.updateOne(
+      { _id: claimed._id, status: 'PURGING', purgingAt: leaseAt },
+      { $set: { purgingAt: null } }
+    ).catch(() => {});
+    return {
+      ok: false,
+      status: 502,
+      error: `Failed to permanently delete file from Amazon S3: ${s3Err.message}`,
+    };
+  }
+
+  const deletedDoc = await runWithOptionalTransaction(async (session) => {
+    const opts = session ? { session } : {};
+    const removed = await Document.findOneAndDelete(
+      { _id: claimed._id, userId, status: 'PURGING', purgingAt: leaseAt },
+      opts
+    );
+    if (!removed) return null;
+
+    await User.updateOne(
+      { _id: userId },
+      safeSubtract('storageUsedBytes', removed.fileSize),
+      pipelineOpts(session)
+    );
+    await SystemStorage.updateOne(
+      { _id: 'global' },
+      safeSubtract('storageUsedBytes', removed.fileSize),
+      pipelineOpts(session)
+    );
+
+    await Activity.create(
+      [
+        {
+          userId,
+          action: 'PURGE',
+          documentId: removed._id,
+          documentName: removed.displayName,
+          details: `Permanently deleted ${removed.displayName} and all S3 versions`,
+          ipAddress,
+        },
+      ],
+      opts
+    );
+
+    return removed;
+  });
+
+  if (!deletedDoc) {
+    return {
+      ok: false,
+      status: 409,
+      error: 'Permanent deletion conflicted with another request.',
+    };
+  }
+
+  return {
+    ok: true,
+    status: 200,
+    documentId: String(deletedDoc._id),
+    reclaimedBytes: deletedDoc.fileSize,
+  };
+}
+
+// DELETE /api/documents/:id (Soft delete: move to Trash without refunding personal or global quota)
 exports.deleteDocument = async (req, res) => {
   try {
     const userId = req.user._id;
@@ -574,44 +681,46 @@ exports.deleteDocument = async (req, res) => {
       return res.status(404).json({ success: false, error: 'Document not found.' });
     }
 
-    if (existing.isTrash) {
-      return res.json({ success: true, message: 'Document is already in trash.' });
+    if (existing.status !== 'COMPLETED') {
+      return res.status(400).json({
+        success: false,
+        error: 'Only completed documents can be moved to Trash.',
+      });
     }
 
-    await runWithOptionalTransaction(async (session) => {
-      const opts = session ? { session } : {};
-      const trashed = await Document.findOneAndUpdate(
-        { _id: req.params.id, userId, isTrash: false, status: 'COMPLETED' },
-        { $set: { isTrash: true, deletedAt: new Date() } },
-        { returnDocument: 'after', ...opts }
-      );
+    if (existing.isTrash) {
+      return res.json({ success: true, data: existing, message: 'Document is already in Trash.' });
+    }
 
-      if (trashed) {
-        await User.updateOne({ _id: userId }, safeSubtract('storageUsedBytes', trashed.fileSize), pipelineOpts(session));
-        await Activity.create(
-          [
-            {
-              userId,
-              action: 'DELETE',
-              documentId: trashed._id,
-              documentName: trashed.displayName,
-              details: `Moved ${trashed.displayName} to Trash`,
-              ipAddress: req.ip || '',
-            },
-          ],
-          opts
-        );
-      }
+    const trashed = await Document.findOneAndUpdate(
+      { _id: req.params.id, userId, isTrash: false, status: 'COMPLETED' },
+      { $set: { isTrash: true, deletedAt: new Date() } },
+      { returnDocument: 'after' }
+    );
+
+    if (trashed) {
+      await Activity.create({
+        userId,
+        action: 'DELETE',
+        documentId: trashed._id,
+        documentName: trashed.displayName,
+        details: `Moved ${trashed.displayName} to Trash`,
+        ipAddress: req.ip || '',
+      });
+    }
+
+    res.json({
+      success: true,
+      data: trashed || existing,
+      message: 'Document moved to Trash.',
     });
-
-    res.json({ success: true, message: 'Document moved to trash successfully.' });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 };
 
-// DELETE /api/documents/:id/purge (Permanent purge from S3 and MongoDB — reclaims global S3 capacity)
-exports.purgeDocument = async (req, res) => {
+// POST /api/documents/:id/restore (Restore document from Trash without modifying storage counters)
+exports.restoreDocument = async (req, res) => {
   try {
     const userId = req.user._id;
     const existing = await Document.findOne({ _id: req.params.id, userId });
@@ -620,48 +729,63 @@ exports.purgeDocument = async (req, res) => {
       return res.status(404).json({ success: false, error: 'Document not found.' });
     }
 
-    const wasCompleted = existing.status === 'COMPLETED';
-    const wasReserved = existing.status === 'RESERVED' || existing.status === 'VERIFYING';
+    if (existing.status !== 'COMPLETED') {
+      return res.status(400).json({
+        success: false,
+        error: 'Document cannot be restored in its current state.',
+      });
+    }
 
-    // Atomically mark PURGING before S3 deletion so partial failures are recoverable
-    const purgingDoc = await Document.findOneAndUpdate(
-      { _id: existing._id, userId, status: { $ne: 'PURGING' } },
-      { $set: { status: 'PURGING', wasTrashBeforePurge: existing.isTrash } },
+    if (!existing.isTrash) {
+      return res.json({ success: true, data: existing, message: 'Document is already active.' });
+    }
+
+    const restored = await Document.findOneAndUpdate(
+      { _id: req.params.id, userId, isTrash: true, status: 'COMPLETED' },
+      { $set: { isTrash: false, deletedAt: null } },
       { returnDocument: 'after' }
     );
 
-    if (!purgingDoc && existing.status !== 'PURGING') {
-      return res.status(409).json({ success: false, error: 'Document purge is already in progress.' });
+    if (restored) {
+      await Activity.create({
+        userId,
+        action: 'RESTORE',
+        documentId: restored._id,
+        documentName: restored.displayName,
+        details: `Restored ${restored.displayName} from Trash`,
+        ipAddress: req.ip || '',
+      });
     }
 
-    const targetDoc = purgingDoc || existing;
-
-    // Delete physical file from Amazon S3 first; only reclaim global capacity if S3 delete succeeds
-    await s3Service.deleteS3Object(targetDoc.s3ObjectKey);
-
-    await runWithOptionalTransaction(async (session) => {
-      const opts = session ? { session } : {};
-      const deletedDoc = await Document.findOneAndDelete({ _id: targetDoc._id, userId }, opts);
-      if (!deletedDoc) return;
-
-      if (wasCompleted || deletedDoc.status === 'PURGING') {
-        if (!deletedDoc.wasTrashBeforePurge) {
-          await User.updateOne({ _id: userId }, safeSubtract('storageUsedBytes', deletedDoc.fileSize), pipelineOpts(session));
-        }
-        await SystemStorage.updateOne({ _id: 'global' }, safeSubtract('storageUsedBytes', deletedDoc.fileSize), pipelineOpts(session));
-      } else if (wasReserved) {
-        await User.updateOne({ _id: userId }, safeSubtract('reservedBytes', deletedDoc.fileSize), pipelineOpts(session));
-        await SystemStorage.updateOne({ _id: 'global' }, safeSubtract('reservedBytes', deletedDoc.fileSize), pipelineOpts(session));
-      }
+    res.json({
+      success: true,
+      data: restored || existing,
+      message: 'Document restored from Trash.',
     });
-
-    res.json({ success: true, message: 'Document permanently deleted from cloud storage.' });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 };
 
-// POST /api/documents/batch-delete (Batch soft deletion — frees personal quota; global S3 remains until purge)
+// DELETE /api/documents/:id/purge (Permanent purge from S3 and MongoDB — reclaims personal & global storage)
+exports.purgeDocument = async (req, res) => {
+  try {
+    const result = await executeSinglePurge(req.params.id, req.user._id, req.ip || '');
+    if (!result.ok) {
+      return res.status(result.status).json({ success: false, error: result.error });
+    }
+
+    res.json({
+      success: true,
+      reclaimedBytes: result.reclaimedBytes,
+      message: 'Document permanently deleted from Amazon S3 and vault.',
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// POST /api/documents/batch-delete (Batch move to Trash without modifying storage counters)
 exports.batchDelete = async (req, res) => {
   try {
     const { documentIds } = req.body;
@@ -671,36 +795,121 @@ exports.batchDelete = async (req, res) => {
       return res.status(400).json({ success: false, error: 'Document IDs array is required.' });
     }
 
-    let freedBytes = 0;
-    let count = 0;
+    const docs = await Document.find({
+      _id: { $in: documentIds },
+      userId,
+      isTrash: false,
+      status: 'COMPLETED',
+    }).select('_id displayName');
 
-    await runWithOptionalTransaction(async (session) => {
-      const docs = await Document.find({
-        _id: { $in: documentIds },
-        userId,
-        isTrash: false,
-        status: 'COMPLETED',
-      }).session(session || null);
-
-      if (docs.length === 0) return;
-
+    if (docs.length > 0) {
       const matchedIds = docs.map((d) => d._id);
-      freedBytes = docs.reduce((acc, d) => acc + d.fileSize, 0);
-      count = docs.length;
-
-      const opts = session ? { session } : {};
       await Document.updateMany(
-        { _id: { $in: matchedIds }, userId, isTrash: false },
-        { $set: { isTrash: true, deletedAt: new Date() } },
-        opts
+        { _id: { $in: matchedIds }, userId, isTrash: false, status: 'COMPLETED' },
+        { $set: { isTrash: true, deletedAt: new Date() } }
       );
-      await User.updateOne({ _id: userId }, safeSubtract('storageUsedBytes', freedBytes), pipelineOpts(session));
-    });
+      await Activity.create({
+        userId,
+        action: 'DELETE',
+        details: `Moved ${docs.length} document(s) to Trash`,
+        ipAddress: req.ip || '',
+      });
+    }
 
     res.json({
       success: true,
-      message: `${count} documents moved to trash.`,
-      freedBytes,
+      count: docs.length,
+      message: `${docs.length} document(s) moved to Trash.`,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// POST /api/documents/batch-restore (Batch restore from Trash without modifying storage counters)
+exports.batchRestore = async (req, res) => {
+  try {
+    const { documentIds } = req.body;
+    const userId = req.user._id;
+
+    if (!Array.isArray(documentIds) || documentIds.length === 0) {
+      return res.status(400).json({ success: false, error: 'Document IDs array is required.' });
+    }
+
+    const docs = await Document.find({
+      _id: { $in: documentIds },
+      userId,
+      isTrash: true,
+      status: 'COMPLETED',
+    }).select('_id');
+
+    if (docs.length > 0) {
+      const matchedIds = docs.map((d) => d._id);
+      await Document.updateMany(
+        { _id: { $in: matchedIds }, userId, isTrash: true, status: 'COMPLETED' },
+        { $set: { isTrash: false, deletedAt: null } }
+      );
+      await Activity.create({
+        userId,
+        action: 'RESTORE',
+        details: `Restored ${docs.length} document(s) from Trash`,
+        ipAddress: req.ip || '',
+      });
+    }
+
+    res.json({
+      success: true,
+      count: docs.length,
+      message: `${docs.length} document(s) restored from Trash.`,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// POST /api/documents/batch-purge (Batch permanent deletion from S3 and MongoDB)
+exports.batchPurge = async (req, res) => {
+  try {
+    const { documentIds } = req.body;
+    const userId = req.user._id;
+
+    if (!Array.isArray(documentIds) || documentIds.length === 0) {
+      return res.status(400).json({ success: false, error: 'Document IDs array is required.' });
+    }
+
+    const uniqueIds = [...new Set(documentIds.map(String))];
+    const purgedIds = [];
+    const failures = [];
+    let reclaimedBytes = 0;
+
+    for (const id of uniqueIds) {
+      const resItem = await executeSinglePurge(id, userId, req.ip || '');
+      if (resItem.ok) {
+        purgedIds.push(resItem.documentId);
+        reclaimedBytes += resItem.reclaimedBytes;
+      } else {
+        failures.push({ id, status: resItem.status, error: resItem.error });
+      }
+    }
+
+    if (purgedIds.length === 0 && failures.length > 0) {
+      return res.status(failures[0].status || 500).json({
+        success: false,
+        error: failures[0].error,
+        failures,
+      });
+    }
+
+    res.json({
+      success: true,
+      purgedIds,
+      purgedCount: purgedIds.length,
+      reclaimedBytes,
+      failures,
+      message:
+        failures.length > 0
+          ? `Permanently deleted ${purgedIds.length} document(s); ${failures.length} failed.`
+          : `Permanently deleted ${purgedIds.length} document(s) from Amazon S3.`,
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });

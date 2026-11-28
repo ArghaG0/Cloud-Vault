@@ -79,6 +79,10 @@ const documentSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    purgingAt: {
+      type: Date,
+      default: null,
+    },
     wasTrashBeforePurge: {
       type: Boolean,
       default: false,

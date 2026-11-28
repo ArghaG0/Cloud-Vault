@@ -2,9 +2,8 @@ const {
   PutObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
-  DeleteObjectCommand,
+  DeleteObjectsCommand,
   ListObjectVersionsCommand,
-  CopyObjectCommand,
   GetBucketVersioningCommand,
 } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
@@ -190,21 +189,95 @@ async function generatePresignedPreviewUrl(s3ObjectKey, mimeType) {
 }
 
 /**
- * Permanently deletes an object from Amazon S3.
+ * Collects all S3 versions and delete markers matching the exact object key.
+ * Handles paginated ListObjectVersions responses and strictly filters Key === s3ObjectKey
+ * so unrelated keys sharing a prefix are never affected.
+ */
+async function listExactObjectVersionsAndMarkers(s3ObjectKey) {
+  const targets = [];
+  let keyMarker = undefined;
+  let versionIdMarker = undefined;
+  let isTruncated = true;
+
+  while (isTruncated) {
+    const response = await s3Client.send(
+      new ListObjectVersionsCommand({
+        Bucket: bucketName,
+        Prefix: s3ObjectKey,
+        KeyMarker: keyMarker,
+        VersionIdMarker: versionIdMarker,
+      })
+    );
+
+    const versions = response.Versions || [];
+    const deleteMarkers = response.DeleteMarkers || [];
+
+    for (const v of versions) {
+      if (v.Key === s3ObjectKey) {
+        targets.push({ Key: s3ObjectKey, VersionId: v.VersionId });
+      }
+    }
+
+    for (const m of deleteMarkers) {
+      if (m.Key === s3ObjectKey) {
+        targets.push({ Key: s3ObjectKey, VersionId: m.VersionId });
+      }
+    }
+
+    isTruncated = Boolean(response.IsTruncated);
+    if (isTruncated) {
+      keyMarker = response.NextKeyMarker;
+      versionIdMarker = response.NextVersionIdMarker;
+    }
+  }
+
+  return targets;
+}
+
+/**
+ * Permanently deletes an object and ALL of its versions and delete markers
+ * from a versioned Amazon S3 bucket, verifying completion before returning.
  */
 async function deleteS3Object(s3ObjectKey) {
   if (isOffline || !s3Client) {
-    return { deleted: true, isSimulated: true };
+    return { deleted: true, deletedVersionsCount: 0, isSimulated: true };
   }
 
-  await s3Client.send(
-    new DeleteObjectCommand({
-      Bucket: bucketName,
-      Key: s3ObjectKey,
-    })
-  );
+  const targets = await listExactObjectVersionsAndMarkers(s3ObjectKey);
+  let deletedCount = 0;
 
-  return { deleted: true, isSimulated: false };
+  // Delete in batches of up to 1,000 (AWS S3 DeleteObjects limit)
+  for (let i = 0; i < targets.length; i += 1000) {
+    const batch = targets.slice(i, i + 1000);
+    const deleteResult = await s3Client.send(
+      new DeleteObjectsCommand({
+        Bucket: bucketName,
+        Delete: {
+          Objects: batch,
+          Quiet: false,
+        },
+      })
+    );
+
+    if (deleteResult.Errors && deleteResult.Errors.length > 0) {
+      const firstErr = deleteResult.Errors[0];
+      throw new Error(
+        `S3 failed to delete version ${firstErr.VersionId || 'unknown'} (${firstErr.Code}): ${firstErr.Message}`
+      );
+    }
+
+    deletedCount += (deleteResult.Deleted || []).length;
+  }
+
+  // Re-verify that zero versions or delete markers remain for this exact key
+  const remaining = await listExactObjectVersionsAndMarkers(s3ObjectKey);
+  if (remaining.length > 0) {
+    throw new Error(
+      `S3 permanent deletion verification failed: ${remaining.length} version(s)/marker(s) still remain for key.`
+    );
+  }
+
+  return { deleted: true, deletedVersionsCount: deletedCount, isSimulated: false };
 }
 
 /**

@@ -3,8 +3,8 @@ import { getActivities } from '../api/activities';
 // Map server action types to UI notification icons and styling types
 function mapActionToActivity(item) {
   const action = item.action || 'UPLOAD';
-  let type = 'upload';
-  let icon = 'cloud_upload';
+  let type;
+  let icon;
 
   switch (action) {
     case 'LOGIN':
@@ -22,6 +22,14 @@ function mapActionToActivity(item) {
     case 'DELETE':
       type = 'delete';
       icon = 'delete';
+      break;
+    case 'RESTORE':
+      type = 'edit';
+      icon = 'restore_from_trash';
+      break;
+    case 'PURGE':
+      type = 'delete';
+      icon = 'delete_forever';
       break;
     case 'RENAME':
       type = 'edit';

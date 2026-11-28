@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useToast } from '../context/ToastContext';
 import { documentService } from '../services/documentService';
-import { formatBytes, formatRelativeTime, getFileIcon } from '../utils/formatters';
+import { formatBytes, formatDate, formatRelativeTime, getFileIcon } from '../utils/formatters';
 import { Badge } from '../components/common/Badge';
 import { Button } from '../components/common/Button';
 import { Checkbox } from '../components/common/Checkbox';
@@ -13,10 +13,13 @@ import { Skeleton } from '../components/common/Skeleton';
 export function MyDocuments() {
   const [searchParams, setSearchParams] = useSearchParams();
   const initialCategory = searchParams.get('category') || 'All';
+  const initialTab = searchParams.get('tab') === 'trash' ? 'trash' : 'active';
 
   const { success, error: toastError, info } = useToast();
 
+  const [activeTab, setActiveTab] = useState(initialTab); // 'active' | 'trash'
   const [documents, setDocuments] = useState([]);
+  const [trashedDocuments, setTrashedDocuments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [selectedCategory, setSelectedCategory] = useState(initialCategory);
@@ -31,12 +34,19 @@ export function MyDocuments() {
   const [newName, setNewName] = useState('');
   const [deleteDoc, setDeleteDoc] = useState(null);
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
+  const [purgeDoc, setPurgeDoc] = useState(null);
+  const [batchPurgeOpen, setBatchPurgeOpen] = useState(false);
+  const [purging, setPurging] = useState(false);
 
   useEffect(() => {
     async function fetchDocs() {
       try {
-        const data = await documentService.getDocuments();
-        setDocuments(Array.isArray(data) ? data : []);
+        const [activeData, trashData] = await Promise.all([
+          documentService.getDocuments({ isTrash: false }),
+          documentService.getDocuments({ isTrash: true }),
+        ]);
+        setDocuments(Array.isArray(activeData) ? activeData : []);
+        setTrashedDocuments(Array.isArray(trashData) ? trashData : []);
       } catch {
         toastError('Failed to load documents');
       } finally {
@@ -46,9 +56,11 @@ export function MyDocuments() {
     fetchDocs();
   }, [toastError]);
 
+  const currentSourceList = activeTab === 'trash' ? trashedDocuments : documents;
+
   // Filter & Sort
   const filteredDocuments = useMemo(() => {
-    const result = documents.filter((doc) => {
+    const result = currentSourceList.filter((doc) => {
       const matchesCategory = selectedCategory === 'All' || doc.category === selectedCategory;
       const matchesType =
         selectedType === 'all' ||
@@ -72,7 +84,9 @@ export function MyDocuments() {
     // Sorting
     result.sort((a, b) => {
       if (sortBy === 'date') {
-        return new Date(b.lastModified || b.createdAt || 0) - new Date(a.lastModified || a.createdAt || 0);
+        const dateA = activeTab === 'trash' ? (a.deletedAt || a.lastModified || a.createdAt) : (a.lastModified || a.createdAt);
+        const dateB = activeTab === 'trash' ? (b.deletedAt || b.lastModified || b.createdAt) : (b.lastModified || b.createdAt);
+        return new Date(dateB || 0) - new Date(dateA || 0);
       }
       if (sortBy === 'name') {
         return (a.displayName || a.name || '').localeCompare(b.displayName || b.name || '');
@@ -86,7 +100,7 @@ export function MyDocuments() {
       return 0;
     });
     return result;
-  }, [documents, selectedCategory, selectedType, searchQuery, sortBy]);
+  }, [currentSourceList, activeTab, selectedCategory, selectedType, searchQuery, sortBy]);
 
   // Selection logic
   const handleSelectAll = (checked) => {
@@ -146,30 +160,113 @@ export function MyDocuments() {
     if (!deleteDoc) return;
     try {
       await documentService.deleteDocument(deleteDoc.id);
+      const movedItem = { ...deleteDoc, isTrash: true, deletedAt: new Date().toISOString() };
       setDocuments((prev) => prev.filter((d) => d.id !== deleteDoc.id));
+      setTrashedDocuments((prev) => [movedItem, ...prev]);
       setSelectedIds((prev) => {
         const next = new Set(prev);
         next.delete(deleteDoc.id);
         return next;
       });
-      success('Document removed from S3 and vault');
+      success('Document moved to Trash');
       setDeleteDoc(null);
     } catch {
-      toastError('Failed to delete document');
+      toastError('Failed to move document to Trash');
     }
   };
 
   const handleBatchDelete = async () => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
     try {
-      for (const id of selectedIds) {
-        await documentService.deleteDocument(id);
-      }
+      await documentService.batchDelete(ids);
+      const nowIso = new Date().toISOString();
+      const movedItems = documents
+        .filter((d) => selectedIds.has(d.id))
+        .map((d) => ({ ...d, isTrash: true, deletedAt: nowIso }));
       setDocuments((prev) => prev.filter((d) => !selectedIds.has(d.id)));
+      setTrashedDocuments((prev) => [...movedItems, ...prev]);
       setSelectedIds(new Set());
-      success(`Deleted ${selectedIds.size} documents from vault`);
+      success(`Moved ${ids.length} document(s) to Trash`);
       setBatchDeleteOpen(false);
     } catch {
-      toastError('Batch deletion failed');
+      toastError('Failed to move selected documents to Trash');
+    }
+  };
+
+  const handleRestore = async (doc) => {
+    try {
+      await documentService.restoreDocument(doc.id);
+      const restoredItem = { ...doc, isTrash: false, deletedAt: null };
+      setTrashedDocuments((prev) => prev.filter((d) => d.id !== doc.id));
+      setDocuments((prev) => [restoredItem, ...prev]);
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(doc.id);
+        return next;
+      });
+      success('Document restored from Trash');
+    } catch {
+      toastError('Failed to restore document');
+    }
+  };
+
+  const handleBatchRestore = async () => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    try {
+      await documentService.batchRestore(ids);
+      const restoredItems = trashedDocuments
+        .filter((d) => selectedIds.has(d.id))
+        .map((d) => ({ ...d, isTrash: false, deletedAt: null }));
+      setTrashedDocuments((prev) => prev.filter((d) => !selectedIds.has(d.id)));
+      setDocuments((prev) => [...restoredItems, ...prev]);
+      setSelectedIds(new Set());
+      success(`Restored ${ids.length} document(s) from Trash`);
+    } catch {
+      toastError('Failed to restore selected documents');
+    }
+  };
+
+  const handlePurgeConfirm = async () => {
+    if (!purgeDoc) return;
+    setPurging(true);
+    try {
+      await documentService.purgeDocument(purgeDoc.id);
+      setTrashedDocuments((prev) => prev.filter((d) => d.id !== purgeDoc.id));
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(purgeDoc.id);
+        return next;
+      });
+      success('Document permanently deleted from Amazon S3');
+      setPurgeDoc(null);
+    } catch (err) {
+      toastError(err?.message || 'Failed to permanently delete document');
+    } finally {
+      setPurging(false);
+    }
+  };
+
+  const handleBatchPurge = async () => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    setPurging(true);
+    try {
+      const res = await documentService.batchPurge(ids);
+      const purgedSet = new Set(res?.purgedIds || ids);
+      setTrashedDocuments((prev) => prev.filter((d) => !purgedSet.has(d.id)));
+      setSelectedIds(new Set());
+      if (res?.failures?.length > 0) {
+        toastError(`Permanently deleted ${purgedSet.size} file(s); ${res.failures.length} failed.`);
+      } else {
+        success(`Permanently deleted ${purgedSet.size} document(s) from Amazon S3`);
+      }
+      setBatchPurgeOpen(false);
+    } catch (err) {
+      toastError(err?.message || 'Batch permanent deletion failed');
+    } finally {
+      setPurging(false);
     }
   };
 
@@ -180,34 +277,89 @@ export function MyDocuments() {
     }, 1000);
   };
 
+  const switchTab = (tab) => {
+    setActiveTab(tab);
+    setSelectedIds(new Set());
+    const nextParams = {};
+    if (selectedCategory !== 'All') nextParams.category = selectedCategory;
+    if (tab === 'trash') nextParams.tab = 'trash';
+    setSearchParams(nextParams);
+  };
+
   const categories = [
-    { label: 'All', count: documents.length },
-    { label: 'Lecture Notes', count: documents.filter((d) => d.category === 'Lecture Notes').length },
-    { label: 'Assignments', count: documents.filter((d) => d.category === 'Assignments').length },
-    { label: 'Question Papers', count: documents.filter((d) => d.category === 'Question Papers').length },
-    { label: 'Project Reports', count: documents.filter((d) => d.category === 'Project Reports').length },
-    { label: 'Study Materials', count: documents.filter((d) => d.category === 'Study Materials').length },
-    { label: 'Other Documents', count: documents.filter((d) => d.category === 'Other Documents').length },
+    { label: 'All', count: currentSourceList.length },
+    { label: 'Lecture Notes', count: currentSourceList.filter((d) => d.category === 'Lecture Notes').length },
+    { label: 'Assignments', count: currentSourceList.filter((d) => d.category === 'Assignments').length },
+    { label: 'Question Papers', count: currentSourceList.filter((d) => d.category === 'Question Papers').length },
+    { label: 'Project Reports', count: currentSourceList.filter((d) => d.category === 'Project Reports').length },
+    { label: 'Study Materials', count: currentSourceList.filter((d) => d.category === 'Study Materials').length },
+    { label: 'Other Documents', count: currentSourceList.filter((d) => d.category === 'Other Documents').length },
   ];
 
   return (
     <div className="flex flex-col gap-6 animate-fade-in relative pb-16">
-      {/* Page Title & Stats */}
+      {/* Page Title & View Switcher */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="font-headline-sm text-2xl font-bold text-on-surface">My Documents</h1>
+          <h1 className="font-headline-sm text-2xl font-bold text-on-surface">
+            {activeTab === 'trash' ? 'Trash' : 'My Documents'}
+          </h1>
           <p className="font-body-sm text-xs text-on-surface-variant mt-0.5">
-            Manage, categorize, and inspect your encrypted academic coursework files
+            {activeTab === 'trash'
+              ? 'Trashed files remain stored until you manually restore or permanently delete them'
+              : 'Manage, categorize, and inspect your encrypted academic coursework files'}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <Link to="/upload">
-            <Button variant="primary" size="sm" icon="add">
-              Upload Files
-            </Button>
-          </Link>
+        <div className="flex items-center gap-2.5">
+          {/* Active Vault / Trash Tab Switcher */}
+          <div className="flex items-center bg-surface-container-low p-1 rounded-full border border-border-subtle">
+            <button
+              type="button"
+              onClick={() => switchTab('active')}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-medium transition-colors ${
+                activeTab === 'active'
+                  ? 'bg-primary text-on-primary'
+                  : 'text-on-surface-variant hover:text-on-surface'
+              }`}
+            >
+              <span>My Documents</span>
+              <span className="font-mono text-[10px] opacity-80">{documents.length}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => switchTab('trash')}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-medium transition-colors ${
+                activeTab === 'trash'
+                  ? 'bg-primary text-on-primary'
+                  : 'text-on-surface-variant hover:text-on-surface'
+              }`}
+            >
+              <span className="material-symbols-outlined text-[14px]">delete</span>
+              <span>Trash</span>
+              <span className="font-mono text-[10px] opacity-80">{trashedDocuments.length}</span>
+            </button>
+          </div>
+
+          {activeTab === 'active' && (
+            <Link to="/upload">
+              <Button variant="primary" size="sm" icon="add">
+                Upload Files
+              </Button>
+            </Link>
+          )}
         </div>
       </div>
+
+      {activeTab === 'trash' && (
+        <div className="p-3.5 rounded-2xl bg-surface-container-low border border-border-subtle flex items-start gap-2.5 text-xs text-on-surface-variant">
+          <span className="material-symbols-outlined text-[18px] text-secondary shrink-0 mt-0.5">info</span>
+          <p>
+            Files in Trash still count toward your storage quota and remain in Amazon S3 until you{' '}
+            <strong className="text-on-surface">Restore</strong> them or choose{' '}
+            <strong className="text-error">Permanently Delete</strong>.
+          </p>
+        </div>
+      )}
 
       {/* Category Filter Capsule Bar */}
       <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
@@ -219,7 +371,10 @@ export function MyDocuments() {
               type="button"
               onClick={() => {
                 setSelectedCategory(cat.label);
-                setSearchParams(cat.label === 'All' ? {} : { category: cat.label });
+                const nextParams = {};
+                if (cat.label !== 'All') nextParams.category = cat.label;
+                if (activeTab === 'trash') nextParams.tab = 'trash';
+                setSearchParams(nextParams);
               }}
               className={`flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-all border ${isActive
                   ? 'bg-primary text-on-primary border-primary shadow-xs'
@@ -337,10 +492,12 @@ export function MyDocuments() {
             <span className="material-symbols-outlined text-[24px]">search_off</span>
           </div>
           <h3 className="font-headline-sm text-base font-semibold text-on-surface">
-            No academic files matched
+            {activeTab === 'trash' ? 'Trash is empty' : 'No academic files matched'}
           </h3>
           <p className="font-body-sm text-xs text-on-surface-variant max-w-sm mt-1">
-            Try adjusting your search query, selecting "All" categories, or resetting file type filters.
+            {activeTab === 'trash'
+              ? 'Documents moved to Trash will appear here until you restore or permanently delete them.'
+              : 'Try adjusting your search query, selecting "All" categories, or resetting file type filters.'}
           </p>
           <Button
             variant="secondary"
@@ -373,7 +530,7 @@ export function MyDocuments() {
                   <th className="py-3.5 px-3">Document Name</th>
                   <th className="py-3.5 px-3">Category</th>
                   <th className="py-3.5 px-3">Size</th>
-                  <th className="py-3.5 px-3">Modified</th>
+                  <th className="py-3.5 px-3">{activeTab === 'trash' ? 'Deleted' : 'Modified'}</th>
                   <th className="py-3.5 px-3">S3 Backup</th>
                   <th className="py-3.5 pr-4 text-right">Actions</th>
                 </tr>
@@ -419,8 +576,19 @@ export function MyDocuments() {
                       <td className="py-3 px-3 font-mono text-[11px] text-on-surface-variant">
                         {formatBytes(docSize)}
                       </td>
-                      <td className="py-3 px-3 text-secondary text-[11px]">
-                        {formatRelativeTime(doc.lastModified || doc.createdAt)}
+                      <td
+                        className="py-3 px-3 text-secondary text-[11px]"
+                        title={
+                          activeTab === 'trash' && doc.deletedAt
+                            ? formatDate(doc.deletedAt)
+                            : undefined
+                        }
+                      >
+                        {formatRelativeTime(
+                          activeTab === 'trash'
+                            ? doc.deletedAt || doc.lastModified || doc.createdAt
+                            : doc.lastModified || doc.createdAt
+                        )}
                       </td>
                       <td className="py-3 px-3">
                         <Badge
@@ -436,64 +604,85 @@ export function MyDocuments() {
                         </Badge>
                       </td>
                       <td className="py-3 pr-4 text-right">
-                        <div className="flex items-center justify-end gap-1">
-                          <button
-                            type="button"
-                            onClick={() => setPreviewDoc(doc)}
-                            className="p-1.5 rounded-full text-secondary hover:text-on-surface hover:bg-panel-surface transition-colors"
-                            title="Quick Preview"
-                          >
-                            <span className="material-symbols-outlined text-[18px]">visibility</span>
-                          </button>
-                          <Link
-                            to={`/documents/${doc.id}/preview`}
-                            className="p-1.5 rounded-full text-secondary hover:text-on-surface hover:bg-panel-surface transition-colors"
-                            title="Full Reader View"
-                          >
-                            <span className="material-symbols-outlined text-[18px]">open_in_new</span>
-                          </Link>
-                          <Dropdown
-                            align="right"
-                            trigger={
-                              <button
-                                type="button"
-                                className="p-1.5 rounded-full text-secondary hover:text-on-surface hover:bg-panel-surface transition-colors"
-                              >
-                                <span className="material-symbols-outlined text-[18px]">more_vert</span>
-                              </button>
-                            }
-                            items={[
-                              {
-                                icon: 'download',
-                                label: 'Download File',
-                                onClick: () => handleDownload(doc),
-                              },
-                              {
-                                icon: 'edit',
-                                label: 'Rename File',
-                                onClick: () => {
-                                  setRenameDoc(doc);
-                                  setNewName(docName);
+                        {activeTab === 'trash' ? (
+                          <div className="flex items-center justify-end gap-1.5">
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => handleRestore(doc)}
+                              icon="restore_from_trash"
+                            >
+                              Restore
+                            </Button>
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              onClick={() => setPurgeDoc(doc)}
+                              icon="delete_forever"
+                            >
+                              Permanently Delete
+                            </Button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center justify-end gap-1">
+                            <button
+                              type="button"
+                              onClick={() => setPreviewDoc(doc)}
+                              className="p-1.5 rounded-full text-secondary hover:text-on-surface hover:bg-panel-surface transition-colors"
+                              title="Quick Preview"
+                            >
+                              <span className="material-symbols-outlined text-[18px]">visibility</span>
+                            </button>
+                            <Link
+                              to={`/documents/${doc.id}/preview`}
+                              className="p-1.5 rounded-full text-secondary hover:text-on-surface hover:bg-panel-surface transition-colors"
+                              title="Full Reader View"
+                            >
+                              <span className="material-symbols-outlined text-[18px]">open_in_new</span>
+                            </Link>
+                            <Dropdown
+                              align="right"
+                              trigger={
+                                <button
+                                  type="button"
+                                  className="p-1.5 rounded-full text-secondary hover:text-on-surface hover:bg-panel-surface transition-colors"
+                                >
+                                  <span className="material-symbols-outlined text-[18px]">more_vert</span>
+                                </button>
+                              }
+                              items={[
+                                {
+                                  icon: 'download',
+                                  label: 'Download File',
+                                  onClick: () => handleDownload(doc),
                                 },
-                              },
-                              {
-                                icon: 'share',
-                                label: 'Copy S3 Link',
-                                onClick: () => {
-                                  navigator.clipboard.writeText(doc.s3ObjectKey || doc.s3Key || '');
-                                  success('S3 Object reference copied to clipboard');
+                                {
+                                  icon: 'edit',
+                                  label: 'Rename File',
+                                  onClick: () => {
+                                    setRenameDoc(doc);
+                                    setNewName(docName);
+                                  },
                                 },
-                              },
-                              { divider: true },
-                              {
-                                icon: 'delete',
-                                label: 'Delete from S3',
-                                danger: true,
-                                onClick: () => setDeleteDoc(doc),
-                              },
-                            ]}
-                          />
-                        </div>
+                                {
+                                  icon: 'share',
+                                  label: 'Copy S3 Link',
+                                  onClick: () => {
+                                    navigator.clipboard.writeText(doc.s3ObjectKey || doc.s3Key || '');
+                                    success('S3 Object reference copied to clipboard');
+                                  },
+                                },
+                                { divider: true },
+                                {
+                                  icon: 'delete',
+                                  label: 'Move to Trash',
+                                  danger: true,
+                                  onClick: () => setDeleteDoc(doc),
+                                },
+                              ]}
+                            />
+                          </div>
+                        )}
                       </td>
                     </tr>
                   );
@@ -539,6 +728,33 @@ export function MyDocuments() {
                   <Badge size="sm">{doc.category}</Badge>
                   <span className="font-mono text-secondary">{formatBytes(docSize)}</span>
                 </div>
+                {activeTab === 'trash' && (
+                  <div className="mt-3 pt-2.5 border-t border-border-subtle/50 flex flex-col gap-2">
+                    <span className="text-[10px] text-secondary">
+                      Deleted {formatRelativeTime(doc.deletedAt || doc.lastModified || doc.createdAt)}
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => handleRestore(doc)}
+                        className="flex-1"
+                        icon="restore_from_trash"
+                      >
+                        Restore
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => setPurgeDoc(doc)}
+                        className="flex-1"
+                        icon="delete_forever"
+                      >
+                        Delete
+                      </Button>
+                    </div>
+                  </div>
+                )}
               </div>
             );
           })}
@@ -558,24 +774,49 @@ export function MyDocuments() {
     </div>
 
     <div className="flex items-center gap-1.5">
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={handleBatchDownload}
-        className="h-7 px-2.5 rounded-full bg-white/10 text-neutral-100 text-xs font-medium border border-white/10 transition-all duration-150 hover:bg-white/18 hover:text-white active:scale-[0.98]"
-        icon="download"
-      >
-        Download
-      </Button>
-      <Button
-        variant="destructive"
-        size="sm"
-        onClick={() => setBatchDeleteOpen(true)}
-        className="h-7 px-2.5 rounded-full bg-red-500/20 text-red-300 text-xs font-medium border border-red-400/25 transition-all duration-150 hover:bg-red-500/35 hover:text-red-200 active:scale-[0.98]"
-        icon="delete"
-      >
-        Delete
-      </Button>
+      {activeTab === 'trash' ? (
+        <>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleBatchRestore}
+            className="h-7 px-2.5 rounded-full bg-white/10 text-neutral-100 text-xs font-medium border border-white/10 transition-all duration-150 hover:bg-white/18 hover:text-white active:scale-[0.98]"
+            icon="restore_from_trash"
+          >
+            Restore
+          </Button>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() => setBatchPurgeOpen(true)}
+            className="h-7 px-2.5 rounded-full bg-red-500/20 text-red-300 text-xs font-medium border border-red-400/25 transition-all duration-150 hover:bg-red-500/35 hover:text-red-200 active:scale-[0.98]"
+            icon="delete_forever"
+          >
+            Permanently Delete
+          </Button>
+        </>
+      ) : (
+        <>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleBatchDownload}
+            className="h-7 px-2.5 rounded-full bg-white/10 text-neutral-100 text-xs font-medium border border-white/10 transition-all duration-150 hover:bg-white/18 hover:text-white active:scale-[0.98]"
+            icon="download"
+          >
+            Download
+          </Button>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() => setBatchDeleteOpen(true)}
+            className="h-7 px-2.5 rounded-full bg-red-500/20 text-red-300 text-xs font-medium border border-red-400/25 transition-all duration-150 hover:bg-red-500/35 hover:text-red-200 active:scale-[0.98]"
+            icon="delete"
+          >
+            Move to Trash
+          </Button>
+        </>
+      )}
       <button
         type="button"
         onClick={() => setSelectedIds(new Set())}
@@ -685,50 +926,107 @@ export function MyDocuments() {
         </div>
       </Modal>
 
-      {/* Single Delete Confirmation Modal */}
+      {/* Single Move to Trash Confirmation Modal */}
       <Modal
         isOpen={!!deleteDoc}
         onClose={() => setDeleteDoc(null)}
-        title="Confirm Permanent Deletion"
-        subtitle="Amazon S3 Object Removal"
-        icon="warning"
+        title="Move Document to Trash"
+        subtitle="Soft Delete — Can Be Restored Later"
+        icon="delete"
       >
         <div className="flex flex-col gap-4">
           <p className="font-body-sm text-xs text-on-surface-variant">
-            Are you sure you want to delete{' '}
-            <strong className="text-on-surface">{deleteDoc?.displayName || deleteDoc?.name}</strong>?
-            This will remove the file from your vault.
+            Move{' '}
+            <strong className="text-on-surface">{deleteDoc?.displayName || deleteDoc?.name}</strong>{' '}
+            to Trash? You can restore it or permanently delete it from the Trash tab at any time.
           </p>
           <div className="flex items-center justify-end gap-2">
             <Button variant="secondary" size="sm" onClick={() => setDeleteDoc(null)}>
               Cancel
             </Button>
             <Button variant="destructive" size="sm" onClick={handleDeleteConfirm}>
-              Delete File
+              Move to Trash
             </Button>
           </div>
         </div>
       </Modal>
 
-      {/* Batch Delete Confirmation Modal */}
+      {/* Batch Move to Trash Confirmation Modal */}
       <Modal
         isOpen={batchDeleteOpen}
         onClose={() => setBatchDeleteOpen(false)}
-        title="Confirm Batch Deletion"
+        title="Move Selected to Trash"
         subtitle={`${selectedIds.size} selected item(s)`}
-        icon="warning"
+        icon="delete"
       >
         <div className="flex flex-col gap-4">
           <p className="font-body-sm text-xs text-on-surface-variant">
-            Are you sure you want to delete{' '}
-            <strong className="text-on-surface">{selectedIds.size}</strong> selected document(s)?
+            Move <strong className="text-on-surface">{selectedIds.size}</strong> selected document(s)
+            to Trash? They can be restored or permanently deleted from the Trash tab later.
           </p>
           <div className="flex items-center justify-end gap-2">
             <Button variant="secondary" size="sm" onClick={() => setBatchDeleteOpen(false)}>
               Cancel
             </Button>
             <Button variant="destructive" size="sm" onClick={handleBatchDelete}>
-              Delete Selected
+              Move to Trash
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Single Permanent Delete Confirmation Modal */}
+      <Modal
+        isOpen={!!purgeDoc}
+        onClose={() => !purging && setPurgeDoc(null)}
+        title="Permanently Delete Document"
+        subtitle="Irreversible Amazon S3 Removal"
+        icon="warning"
+      >
+        <div className="flex flex-col gap-4">
+          <p className="font-body-sm text-xs text-on-surface-variant">
+            Are you sure you want to permanently delete{' '}
+            <strong className="text-on-surface">{purgeDoc?.displayName || purgeDoc?.name}</strong>?{' '}
+            <strong className="text-error">This action cannot be undone.</strong> All versions of
+            this file will be permanently erased from Amazon S3 and your storage quota will be reclaimed.
+          </p>
+          <div className="flex items-center justify-end gap-2">
+            <Button variant="secondary" size="sm" onClick={() => setPurgeDoc(null)} disabled={purging}>
+              Cancel
+            </Button>
+            <Button variant="destructive" size="sm" onClick={handlePurgeConfirm} loading={purging}>
+              Permanently Delete
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Batch Permanent Delete Confirmation Modal */}
+      <Modal
+        isOpen={batchPurgeOpen}
+        onClose={() => !purging && setBatchPurgeOpen(false)}
+        title="Permanently Delete Selected"
+        subtitle={`${selectedIds.size} selected item(s) — Irreversible`}
+        icon="warning"
+      >
+        <div className="flex flex-col gap-4">
+          <p className="font-body-sm text-xs text-on-surface-variant">
+            Are you sure you want to permanently delete{' '}
+            <strong className="text-on-surface">{selectedIds.size}</strong> selected document(s)?{' '}
+            <strong className="text-error">This action cannot be undone.</strong> All versions of
+            these files will be permanently erased from Amazon S3.
+          </p>
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setBatchPurgeOpen(false)}
+              disabled={purging}
+            >
+              Cancel
+            </Button>
+            <Button variant="destructive" size="sm" onClick={handleBatchPurge} loading={purging}>
+              Permanently Delete All
             </Button>
           </div>
         </div>

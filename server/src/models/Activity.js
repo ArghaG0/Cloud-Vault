@@ -10,7 +10,7 @@ const activitySchema = new mongoose.Schema(
     },
     action: {
       type: String,
-      enum: ['UPLOAD', 'DOWNLOAD', 'RENAME', 'RECATEGORIZE', 'DELETE', 'RESTORE', 'LOGIN', 'SYNC'],
+      enum: ['UPLOAD', 'DOWNLOAD', 'RENAME', 'RECATEGORIZE', 'DELETE', 'RESTORE', 'PURGE', 'LOGIN', 'SYNC'],
       required: true,
       index: true,
     },

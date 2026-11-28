@@ -8,8 +8,11 @@ import {
   getPreviewUrl,
   updateDocument,
   deleteDocument,
+  restoreDocument,
   purgeDocument,
   batchDelete,
+  batchRestore,
+  batchPurge,
   batchMove,
   uploadToPresignedUrl,
 } from '../api/documents';
@@ -31,6 +34,7 @@ function normalizeDoc(doc) {
     s3ObjectKey: doc.s3ObjectKey || doc.s3Key || '',
     uploadDate: doc.createdAt || doc.uploadDate || new Date().toISOString(),
     lastModified: doc.lastModified || doc.updatedAt || doc.createdAt || new Date().toISOString(),
+    deletedAt: doc.deletedAt || null,
   };
 }
 
@@ -42,6 +46,7 @@ export const documentService = {
     const apiParams = {
       ...params,
       q: params.search || params.q,
+      isTrash: params.isTrash ? 'true' : 'false',
       limit: params.limit || 50,
     };
     const res = await getDocuments(apiParams);
@@ -78,6 +83,13 @@ export const documentService = {
   },
 
   /**
+   * Restores a soft-deleted document from Trash
+   */
+  async restoreDocument(id) {
+    return await restoreDocument(id);
+  },
+
+  /**
    * Permanently purges document from S3 and database
    */
   async purgeDocument(id) {
@@ -85,10 +97,24 @@ export const documentService = {
   },
 
   /**
-   * Batch deletes documents
+   * Batch deletes documents (moves to Trash)
    */
   async batchDelete(documentIds) {
     return await batchDelete(documentIds);
+  },
+
+  /**
+   * Batch restores documents from Trash
+   */
+  async batchRestore(documentIds) {
+    return await batchRestore(documentIds);
+  },
+
+  /**
+   * Batch permanently purges documents from S3 and database
+   */
+  async batchPurge(documentIds) {
+    return await batchPurge(documentIds);
   },
 
   /**

@@ -162,6 +162,19 @@ export async function deleteDocument(id) {
 }
 
 /**
+ * Restores a soft-deleted document from Trash.
+ * Route: POST /api/documents/:id/restore
+ *
+ * @param {string} id
+ * @returns {Promise<Object>}
+ */
+export async function restoreDocument(id) {
+  return apiClient(`${DOCS_PREFIX}/${encodeURIComponent(id)}/restore`, {
+    method: 'POST',
+  });
+}
+
+/**
  * Permanently purges a document from S3 and MongoDB.
  * Route: DELETE /api/documents/:id/purge
  *
@@ -175,7 +188,7 @@ export async function purgeDocument(id) {
 }
 
 /**
- * Batch soft deletes multiple documents.
+ * Batch soft deletes multiple documents (moves to Trash).
  * Route: POST /api/documents/batch-delete
  *
  * @param {string[]} documentIds
@@ -183,6 +196,34 @@ export async function purgeDocument(id) {
  */
 export async function batchDelete(documentIds) {
   return apiClient(`${DOCS_PREFIX}/batch-delete`, {
+    method: 'POST',
+    body: { documentIds },
+  });
+}
+
+/**
+ * Batch restores multiple documents from Trash.
+ * Route: POST /api/documents/batch-restore
+ *
+ * @param {string[]} documentIds
+ * @returns {Promise<Object>}
+ */
+export async function batchRestore(documentIds) {
+  return apiClient(`${DOCS_PREFIX}/batch-restore`, {
+    method: 'POST',
+    body: { documentIds },
+  });
+}
+
+/**
+ * Batch permanently purges multiple documents from S3 and MongoDB.
+ * Route: POST /api/documents/batch-purge
+ *
+ * @param {string[]} documentIds
+ * @returns {Promise<Object>}
+ */
+export async function batchPurge(documentIds) {
+  return apiClient(`${DOCS_PREFIX}/batch-purge`, {
     method: 'POST',
     body: { documentIds },
   });
